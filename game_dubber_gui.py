@@ -207,7 +207,7 @@ class GameDubberApp(tk.Tk):
         self.review_tree.column("attempts", width=80, minwidth=70, anchor="center", stretch=False)
         self.review_tree.column("duration", width=84, minwidth=78, anchor="e", stretch=False)
         self.review_tree.tag_configure("available", foreground="#808080")
-        self.review_tree.tag_configure("deferred", foreground="#d97904")
+        self.review_tree.tag_configure("deferred", foreground="#c6a100")
         self.review_tree.tag_configure("validated", foreground="#179b3a")
         self.review_tree.tag_configure("not_validated", foreground="#d32121")
         review_scroll = ttk.Scrollbar(self.validation_report, orient="vertical", command=self.review_tree.yview)
