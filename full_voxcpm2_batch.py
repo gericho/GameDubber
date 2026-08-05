@@ -896,7 +896,7 @@ def main() -> int:
     parser.add_argument("--preview-wav-initially-disabled", action="store_true", help="Keep the preview capability idle until the GUI checkbox is enabled.")
     parser.add_argument("--phonetic-dictionary-root", type=Path, help="Directory containing user-editable model phonetic dictionaries.")
     parser.add_argument("--asr-checkpoint-interval", type=int, default=500, help="Validate one eligible generated line every N completed WEMs; 0 disables it.")
-    parser.add_argument("--asr-max-attempts", type=int, default=5, help="Maximum total synthesis attempts for a failed ASR checkpoint line.")
+    parser.add_argument("--asr-max-attempts", type=int, default=4, help="Maximum total synthesis attempts for a failed ASR checkpoint line.")
     parser.add_argument("--resume", action="store_true", help="Continue an interrupted run and skip verified final WEM outputs.")
     args = parser.parse_args()
     if args.asr_checkpoint_interval < 0:
@@ -1518,10 +1518,10 @@ def main() -> int:
                         for source, entry in pending_asr_retries.items()
                         if source in newest_by_source
                     }
-                    # Never let an old five-attempt failure suppress the
+                    # Never let an old max-attempt failure suppress the
                     # regeneration of fresh one-attempt failures.  Each
-                    # retry depth gets its own pass, so 1/5 entries are
-                    # regenerated immediately while 5/5 entries are merely
+                    # retry depth gets its own pass, so early failures are
+                    # regenerated immediately while maxed-out entries are merely
                     # finalized for the later fallback/report path.
                     retry_buckets: dict[int, list[dict]] = {}
                     for item in resume_retry_group:

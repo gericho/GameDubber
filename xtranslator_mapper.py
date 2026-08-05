@@ -1369,11 +1369,11 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_group_size'] = group_size
                             context['asr_group_checked_sources'] = set()
                             context['asr_validation_attempt'] = 1
-                            context['asr_validation_max_attempts'] = 5
+                            context['asr_validation_max_attempts'] = 4
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=group_size, value=0)
                             self.step_status.set(
-                                f'Current task: ASR validation — attempt 1/5 | 0 / {group_size:,}'
+                                f'Current task: ASR validation — attempt 1/4 | 0 / {group_size:,}'
                             )
                         self._append_log('> ' + clean)
                         continue
@@ -1430,7 +1430,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             asr_number, asr_total = 0, int(context.get('unique_count', 0))
                             self._append_log('> ASR WEM validation', tag)
                         # Count unique source lines in the active ASR pass.
-                        # A failed line can have up to five attempts; counting
+                        # A failed line can have up to four attempts; counting
                         # every attempt made the bar exceed or misrepresent
                         # the fixed validation group.
                         checked_sources = context.setdefault('asr_group_checked_sources', set())
@@ -1443,7 +1443,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_validation_attempt'] = int(attempt_match.group(1))
                             context['asr_validation_max_attempts'] = int(attempt_match.group(2))
                         attempt = int(context.get('asr_validation_attempt', 1))
-                        max_attempts = int(context.get('asr_validation_max_attempts', 5))
+                        max_attempts = int(context.get('asr_validation_max_attempts', 4))
                         self.step.configure(maximum=total_asr, value=min(checked, total_asr))
                         self.step_status.set(
                             f'Current task: ASR validation — attempt {attempt}/{max_attempts} '
@@ -2317,7 +2317,7 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     for source, row in cache['rows'].items():
         state, label, attempts = _review_state(cache, source, row)
         counts[state] += 1
-        if state == 'not_validated' and attempts >= 5:
+        if state == 'not_validated' and attempts >= 4:
             counts['rejected'] += 1
         if self.review_only_unvalidated.get() and state != 'not_validated':
             continue
@@ -2361,7 +2361,7 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
             '', 'end', iid=item_id,
             values=(
                 f'{number:,}' if number else '—',
-                str(row.get('official_subtitle', '')), label, f'{attempts}/5' if attempts else '—',
+                str(row.get('official_subtitle', '')), label, f'{min(attempts, 4)}/4' if attempts else '—',
                 f'{float(english_duration) / 1000:.1f} s' if isinstance(english_duration, (int, float)) else '—',
             ),
             tags=(state,),
