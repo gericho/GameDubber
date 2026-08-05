@@ -1179,9 +1179,16 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
         return
     context = self._full_batch_context
     finished = None
+    # Never drain an unbounded child-output backlog in one Tk callback.  ASR
+    # and the extraction/encoding workers can emit events faster than the UI
+    # consumes them; an endless ``while True`` then prevents mouse clicks,
+    # window moves and the live-preview checkbox from being serviced.
+    max_events_per_tick = 100
+    events_processed = 0
     try:
-        while True:
+        while events_processed < max_events_per_tick:
             kind, value = self._full_batch_queue.get_nowait()
+            events_processed += 1
             if kind == 'line':
                 clean = value
                 if clean.startswith('ITEM '):
