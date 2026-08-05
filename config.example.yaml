@@ -1,0 +1,36 @@
+game:
+  type: starfield
+  path: "D:/Games/Starfield"
+  data_dir: "Data"
+language:
+  source_audio_lang: en
+  target_lang: it
+  use_official_subtitles: true
+hardware:
+  low_vram_mode: true
+  max_vram_gb: 12
+  keep_models_loaded: false
+  clear_cuda_between_stages: true
+batching:
+  asr_batch_size: 1
+  tts_batch_size: 1
+  llm_batch_size: 1
+tts:
+  backend: dry-run
+  use_reference_audio: true
+  preserve_speaker_style: true
+  target_duration_matching: true
+  allow_voice_cloning: false
+quality:
+  duration_tolerance_percent: 10
+  max_time_stretch_percent: 8
+  retry_failed: true
+  manual_review_threshold: 0.65
+cache:
+  enabled: true
+  resume: true
+  checksum_inputs: true
+paths:
+  workspace: workspace
+tools:
+  ba2_extractor_command: ""

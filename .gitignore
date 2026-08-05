@@ -1,0 +1,36 @@
+# Local Python state
+.venv/
+__pycache__/
+*.py[cod]
+
+# User-specific configuration and all generated/local pipeline data
+config.yaml
+/work/
+/backups/
+/saved_production_sessions/
+/backup_before_clean_restart/
+/voice_pipeline/
+/20260803-203721/
+/20260804-134216-remove-madlad/
+
+# Build products and extracted/bundled third-party runtime files
+/build/
+/dist/
+/GameDubber.exe
+/_internal/
+/_research/
+/archive_reader/
+/tools/llama-cpp/
+/tools/vgmstream/
+/archive_reader/target/
+
+# Game assets and generated audio/mod archives must never be committed
+*.ba2
+*.wav
+*.wem
+*.xwm
+*.fuz
+
+# OS/editor files
+.DS_Store
+Thumbs.db
