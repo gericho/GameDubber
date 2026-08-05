@@ -26,8 +26,8 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 SOURCE_ROOT = Path(__file__).resolve().parent
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 WORK_ROOT = APP_ROOT / "work" if getattr(sys, "frozen", False) else SOURCE_ROOT / "work"
-APP_VERSION = "ALPHA 0.1.67"
-BUILD_TIMESTAMP = "2026-08-05 23:17:56"
+APP_VERSION = "ALPHA 0.1.68"
+BUILD_TIMESTAMP = "2026-08-05 23:22:01"
 
 class FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
