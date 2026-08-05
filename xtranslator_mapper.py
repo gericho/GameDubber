@@ -1369,10 +1369,13 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_group_number'] = group_number
                             context['asr_group_size'] = group_size
                             context['asr_group_checked_sources'] = set()
+                            context['asr_validation_attempt'] = 1
+                            context['asr_validation_max_attempts'] = 5
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=group_size, value=0)
                             self.step_status.set(
-                                f'Current task: ASR validation — group {group_number:,} | 0 / {group_size:,}'
+                                f'Current task: ASR validation — group {group_number:,} '
+                                f'| attempt 1/5 | 0 / {group_size:,}'
                             )
                         self._append_log('> ' + clean)
                         continue
@@ -1387,6 +1390,8 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_group_number'] = group_number
                             context['asr_group_size'] = max(1, group_size)
                             context['asr_group_checked_sources'] = set()
+                            context['asr_validation_attempt'] = attempt
+                            context['asr_validation_max_attempts'] = max_attempts
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=max(1, group_size), value=0)
                             self.step_status.set(
@@ -1436,10 +1441,17 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                         checked = len(checked_sources)
                         total_asr = max(1, int(context.get('asr_group_size', 500)))
                         group_number = context.get('asr_group_number')
+                        attempt_match = re.search(r'\battempt=(\d+)/(\d+)', clean)
+                        if attempt_match:
+                            context['asr_validation_attempt'] = int(attempt_match.group(1))
+                            context['asr_validation_max_attempts'] = int(attempt_match.group(2))
+                        attempt = int(context.get('asr_validation_attempt', 1))
+                        max_attempts = int(context.get('asr_validation_max_attempts', 5))
                         self.step.configure(maximum=total_asr, value=min(checked, total_asr))
                         group_label = f'group {int(group_number):,} | ' if group_number else ''
                         self.step_status.set(
-                            f'Current task: ASR validation — {group_label}{checked:,} / {total_asr:,}'
+                            f'Current task: ASR validation — {group_label}'
+                            f'attempt {attempt}/{max_attempts} | {checked:,} / {total_asr:,}'
                         )
                     else:
                         self._append_log('> ' + clean, tag)
