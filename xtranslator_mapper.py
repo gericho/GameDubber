@@ -2222,7 +2222,16 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     self._review_tree_rows = {}
     for number, source, row, state, label, attempts in prepared[page * page_size:(page + 1) * page_size]:
         item_id = f'r{number}_{zlib.crc32(source.encode("utf-8")) & 0xffffffff:08x}'
-        tree.insert('', 'end', iid=item_id, values=(f'{number:,}' if number else '—', str(row.get('official_subtitle', '')), label, f'{attempts}/5' if attempts else '—'), tags=(state,))
+        english_duration = row.get('reference_duration_ms')
+        tree.insert(
+            '', 'end', iid=item_id,
+            values=(
+                f'{number:,}' if number else '—',
+                f'{int(english_duration):,}' if isinstance(english_duration, (int, float)) else '—',
+                str(row.get('official_subtitle', '')), label, f'{attempts}/5' if attempts else '—',
+            ),
+            tags=(state,),
+        )
         self._review_tree_rows[item_id] = (source, row, state)
     self.review_previous_button.configure(state='normal' if page else 'disabled')
     self.review_next_button.configure(state='normal' if page + 1 < pages else 'disabled')
