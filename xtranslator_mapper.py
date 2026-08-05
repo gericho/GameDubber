@@ -1219,16 +1219,29 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             action = {'extract': 'extracting', 'decode_cpu': 'decoding'}.get(prefetch_stage, prefetch_stage)
                             summary.append(f'{action} next {prefetch_number:,}')
                         self._track_review_number(number)
-                        # The Current task bar follows the same source-manifest
-                        # position displayed in its label.  A completed-WEM
-                        # count is intentionally not used here: deferred rows
-                        # and ASR retries make it a different, misleading
-                        # measure of this task's progress.
-                        self.step.configure(maximum=max(1, total), value=min(number, total))
-                        self.step_status.set(
-                            f'Current task: {label} — Source WEM {number:,} / {total:,} '
-                            f'· ETA {context.get("eta_text", "calculating...")}'
-                        )
+                        if stage == 'generate_target' and context.get('asr_regeneration_active'):
+                            regenerated = context.setdefault('asr_regenerated_sources', set())
+                            regenerated.add(number)
+                            retry_total = max(1, int(context.get('asr_regeneration_total', 1)))
+                            retry_group = int(context.get('asr_regeneration_group', 0) or 0)
+                            retry_position = min(len(regenerated), retry_total)
+                            label = f'Regenerating WEM with {context["engine_name"]}'
+                            context['latest_stage_label'] = label
+                            self.step.configure(maximum=retry_total, value=retry_position)
+                            self.step_status.set(
+                                f'Current task: {label} — ASR group {retry_group:,} '
+                                f'| {retry_position:,} / {retry_total:,}'
+                            )
+                        else:
+                            # The Current task bar follows the same
+                            # source-manifest position displayed in its label.
+                            # A completed-WEM count is intentionally not used:
+                            # deferred rows make it a different measure.
+                            self.step.configure(maximum=max(1, total), value=min(number, total))
+                            self.step_status.set(
+                                f'Current task: {label} — Source WEM {number:,} / {total:,} '
+                                f'· ETA {context.get("eta_text", "calculating...")}'
+                            )
                         # The technical ITEM line below is the single console
                         # record for this event.  Progress and dialogue still
                         # update here, but emitting an extra Pipeline summary
@@ -1333,6 +1346,21 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                     except (IndexError, ValueError, ZeroDivisionError):
                         pass
                 elif clean.startswith(('ASR ', 'VOX ASR ', 'VOX FALLBACK ', 'ASR GROUP ', 'MODEL loading Whisper for ASR group ')):
+                    if clean.startswith('ASR GROUP ') and ' regenerating ' in clean:
+                        retry_match = re.search(r'^ASR GROUP (\d+) regenerating (\d+) failed item\(s\)', clean)
+                        if retry_match:
+                            group_number, retry_total = (int(value) for value in retry_match.groups())
+                            context['asr_regeneration_active'] = True
+                            context['asr_regeneration_group'] = group_number
+                            context['asr_regeneration_total'] = max(1, retry_total)
+                            context['asr_regenerated_sources'] = set()
+                            self.step.configure(maximum=max(1, retry_total), value=0)
+                            self.step_status.set(
+                                f'Current task: Regenerating WEM with {context["engine_name"]} '
+                                f'— ASR group {group_number:,} | 0 / {retry_total:,}'
+                            )
+                        self._append_log('> ' + clean)
+                        continue
                     if clean.startswith('ASR GROUP ') and ' start ' in clean:
                         group_match = re.search(r'^ASR GROUP (\d+) start items=(\d+)', clean)
                         if group_match:
@@ -1341,6 +1369,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_group_number'] = group_number
                             context['asr_group_size'] = group_size
                             context['asr_group_checked_sources'] = set()
+                            context['asr_regeneration_active'] = False
                             self.step.configure(maximum=group_size, value=0)
                             self.step_status.set(
                                 f'Current task: ASR validation — group {group_number:,} | 0 / {group_size:,}'
@@ -1358,6 +1387,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_group_number'] = group_number
                             context['asr_group_size'] = max(1, group_size)
                             context['asr_group_checked_sources'] = set()
+                            context['asr_regeneration_active'] = False
                             self.step.configure(maximum=max(1, group_size), value=0)
                             self.step_status.set(
                                 f'Current task: ASR validation — group {group_number:,} '

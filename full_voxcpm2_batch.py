@@ -965,25 +965,33 @@ def main() -> int:
     deferred_sources: set[str] = set()
     completed_result_rows: list[dict] = []
     if args.resume and results_path.is_file():
+        # ``results.jsonl`` is append-only.  A later migration can correctly
+        # defer a previously generated WEM, so resume must honour the newest
+        # state for each source rather than retaining an earlier WEM record.
+        latest_result_by_source: dict[str, dict] = {}
         with results_path.open("r", encoding="utf-8") as previous_results:
             for line in previous_results:
                 try:
                     previous = json.loads(line)
-                    # A production item is complete only after the final
-                    # Starfield-compatible WEM has been written.  Temporary
-                    # WAV/Opus artefacts must never make resume skip a line.
-                    output = Path(str(previous.get("output_wem_path") or ""))
-                    if previous.get("status") in {"wem_generated", "original_wem_retained"} and output.is_file() and output.stat().st_size > 0:
-                        completed_sources.add(str(previous.get("source_audio_path", "")))
-                        if previous.get("status") == "wem_generated":
-                            completed_result_rows.append(previous)
-                    elif previous.get("status") == "deferred_short_reference":
-                        # The dedicated later-stage queue owns this source.
-                        # Do not repeatedly extract it on every resume while
-                        # the current XTTS-only phase is intentionally active.
-                        deferred_sources.add(str(previous.get("source_audio_path", "")))
+                    source_path = str(previous.get("source_audio_path", ""))
+                    if source_path:
+                        latest_result_by_source[source_path] = previous
                 except (ValueError, TypeError):
                     continue
+        for source_path, previous in latest_result_by_source.items():
+            # A production item is complete only after the final
+            # Starfield-compatible WEM has been written.  Temporary WAV/Opus
+            # artefacts must never make resume skip a line.
+            output = Path(str(previous.get("output_wem_path") or ""))
+            if previous.get("status") in {"wem_generated", "original_wem_retained"} and output.is_file() and output.stat().st_size > 0:
+                completed_sources.add(source_path)
+                if previous.get("status") == "wem_generated":
+                    completed_result_rows.append(previous)
+            elif previous.get("status") == "deferred_short_reference":
+                # The dedicated later-stage queue owns this source.  Do not
+                # repeatedly extract it on every resume while the current
+                # XTTS-only phase is intentionally active.
+                deferred_sources.add(source_path)
         print(f"RESUME completed={len(completed_sources)} deferred_short_reference={len(deferred_sources)} total={total} language={args.language} engine={args.engine}", flush=True)
     completed_max_number = max((int(row.get("number", 0)) for row in completed_result_rows), default=0)
     resume_partial_rows: list[dict] = []
@@ -1059,7 +1067,10 @@ def main() -> int:
         # block whose final source number already exists may hold up resume.
         pending_asr_retries = {
             source: entry for source, entry in pending_asr_retries.items()
-            if int(entry.get("group", 0)) * args.asr_checkpoint_interval <= completed_max_number
+            if (
+                source not in deferred_sources
+                and int(entry.get("group", 0)) * args.asr_checkpoint_interval <= completed_max_number
+            )
         }
     preview_sequence = 0
     pause_requested = False
