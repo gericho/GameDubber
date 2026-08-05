@@ -12,6 +12,7 @@ import sqlite3
 import struct
 import tkinter as tk
 import threading
+import time
 import wave
 import zlib
 import unicodedata
@@ -2182,6 +2183,20 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
         if schedule:
             self.after(1000, self._refresh_embedded_validation_report)
         return
+    # A complete report refresh synchronizes the journal and recreates a page
+    # of 1,000 Treeview rows.  During Track, production can emit several
+    # progress events per second; rebuilding the page for each one starves
+    # Tk's event loop and makes the main window feel frozen.  Keep the visible
+    # selection responsive, but limit the expensive synchronization/render to
+    # once every four seconds while Track is enabled.
+    track_enabled = bool(
+        getattr(self, 'review_track_enabled', None) is not None
+        and self.review_track_enabled.get()
+    )
+    last_render = float(getattr(self, '_review_last_full_render_monotonic', 0.0) or 0.0)
+    if schedule and track_enabled and (time.monotonic() - last_render) < 4.0:
+        self.after(500, self._refresh_embedded_validation_report)
+        return
     cache = _review_sync(self, run_dir)
     prepared = []
     counts = {'available': 0, 'deferred': 0, 'validated': 0, 'not_validated': 0, 'rejected': 0}
@@ -2241,6 +2256,7 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     requires_review = max(0, counts['not_validated'] - counts['rejected'])
     search_suffix = f' | Search: {len(prepared):,} match(es)' if search_text else ''
     self.review_status.set(f'Validated: {counts["validated"]:,} | Deferred: {counts["deferred"]:,} | Requires review: {requires_review:,} | Rejected: {counts["rejected"]:,} | Page {page + 1}/{pages} ({len(prepared):,} journal entries){search_suffix}')
+    self._review_last_full_render_monotonic = time.monotonic()
     if schedule:
         self.after(1000, self._refresh_embedded_validation_report)
 
@@ -2315,7 +2331,11 @@ def _track_review_number(self, number: int) -> None:
     # Whisper can emit several events per second.  When the row already
     # belongs to the displayed page, moving selection/scrollbar is O(1);
     # rebuilding 1,000 Tk rows for every ASR line froze the interface.
-    if not filter_changed and wanted_page == int(getattr(self, '_review_page', 0)) and _focus_tracked_review_row(self, number):
+    if not filter_changed and wanted_page == int(getattr(self, '_review_page', 0)):
+        # A just-created result may not yet be present in the cached page.
+        # Do not force a full rebuild for it: the periodic throttled refresh
+        # will add it shortly, while the current blue selection remains intact.
+        _focus_tracked_review_row(self, number)
         return
     self._review_page = wanted_page
     self._review_render_key = None
