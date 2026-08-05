@@ -2158,6 +2158,13 @@ def _review_sync(self, run_dir: Path) -> dict:
 
 
 def _review_state(cache: dict, source: str, row: dict) -> tuple[str, str, int]:
+    if row.get('status') == 'deferred_short_reference':
+        duration = row.get('reference_duration_ms')
+        minimum = row.get('xtts_minimum_reference_duration_ms')
+        detail = f'{duration} ms' if isinstance(duration, int) else 'short English reference'
+        if isinstance(minimum, int):
+            detail += f' (XTTS minimum {minimum} ms)'
+        return 'deferred', f'Deferred: {detail}', 0
     wem = Path(str(row.get('output_wem_path', '')))
     available = row.get('status') == 'wem_generated' and wem.is_file()
     if not available:
@@ -2182,7 +2189,7 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
         return
     cache = _review_sync(self, run_dir)
     prepared = []
-    counts = {'available': 0, 'validated': 0, 'not_validated': 0, 'rejected': 0}
+    counts = {'available': 0, 'deferred': 0, 'validated': 0, 'not_validated': 0, 'rejected': 0}
     search_text = str(getattr(self, '_review_search_applied', '')).strip().casefold()
     for source, row in cache['rows'].items():
         state, label, attempts = _review_state(cache, source, row)
@@ -2215,7 +2222,7 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     self._review_tree_rows = {}
     for number, source, row, state, label, attempts in prepared[page * page_size:(page + 1) * page_size]:
         item_id = f'r{number}_{zlib.crc32(source.encode("utf-8")) & 0xffffffff:08x}'
-        tree.insert('', 'end', iid=item_id, values=('●', f'{number:,}' if number else '—', str(row.get('official_subtitle', '')), label, f'{attempts}/5' if attempts else '—'), tags=(state,))
+        tree.insert('', 'end', iid=item_id, values=(f'{number:,}' if number else '—', str(row.get('official_subtitle', '')), label, f'{attempts}/5' if attempts else '—'), tags=(state,))
         self._review_tree_rows[item_id] = (source, row, state)
     self.review_previous_button.configure(state='normal' if page else 'disabled')
     self.review_next_button.configure(state='normal' if page + 1 < pages else 'disabled')
@@ -2223,7 +2230,7 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     self.review_jump_next_button.configure(state='normal' if page + 5 < pages else 'disabled')
     requires_review = max(0, counts['not_validated'] - counts['rejected'])
     search_suffix = f' | Search: {len(prepared):,} match(es)' if search_text else ''
-    self.review_status.set(f'Validated: {counts["validated"]:,} | Requires review: {requires_review:,} | Rejected: {counts["rejected"]:,} | Page {page + 1}/{pages} ({len(prepared):,} journal entries){search_suffix}')
+    self.review_status.set(f'Validated: {counts["validated"]:,} | Deferred: {counts["deferred"]:,} | Requires review: {requires_review:,} | Rejected: {counts["rejected"]:,} | Page {page + 1}/{pages} ({len(prepared):,} journal entries){search_suffix}')
     if schedule:
         self.after(1000, self._refresh_embedded_validation_report)
 
@@ -2312,40 +2319,7 @@ def _review_click(self, event) -> None:
     if not item_id or item_id not in getattr(self, '_review_tree_rows', {}):
         return
     source, row, state = self._review_tree_rows[item_id]
-    column = tree.identify_column(event.x)
-    if column == '#1':
-        if state == 'available':
-            return
-        cache = _review_sync(self, _review_run_directory(self))
-        previous_manual = cache['manual'].get(source)
-        current = previous_manual if previous_manual is not None else state == 'validated'
-        new_value = not current
-        from game_dubber_gui import WORK_ROOT
-        try:
-            connection = sqlite3.connect(WORK_ROOT / 'voice_pipeline.db', timeout=0.5)
-            connection.execute("""CREATE TABLE IF NOT EXISTS production_voice_review_overrides (
-                run_id TEXT NOT NULL, source_audio_path TEXT NOT NULL,
-                validated INTEGER NOT NULL, updated_at TEXT NOT NULL,
-                PRIMARY KEY (run_id, source_audio_path))""")
-            connection.execute('INSERT OR REPLACE INTO production_voice_review_overrides VALUES (?, ?, ?, ?)', (
-                _review_run_directory(self).name, source, int(new_value), datetime.now(timezone.utc).isoformat(),
-            ))
-            connection.commit(); connection.close()
-            cache['manual'][source] = new_value
-            cache['version'] = int(cache.get('version', 0)) + 1
-            history = getattr(self, '_review_override_history', None)
-            if not isinstance(history, list):
-                history = []
-                self._review_override_history = history
-            history.append((_review_run_directory(self).name, source, previous_manual, new_value))
-            self._review_redo_history = []
-            self.review_undo_button.configure(state='normal')
-            self.review_redo_button.configure(state='disabled')
-            _refresh_embedded_validation_report(self, schedule=False)
-        except sqlite3.Error as error:
-            self._append_log(f'> Report override could not be saved: {error}')
-        return
-    if column == '#3' and state != 'available':
+    if state != 'available':
         _play_review_wem(self, Path(str(row.get('output_wem_path', ''))), source)
 
 
