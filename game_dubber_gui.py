@@ -91,6 +91,7 @@ class GameDubberApp(tk.Tk):
         self.overall_status = tk.StringVar(value="Overall: Ready")
         self.step_status = tk.StringVar(value="Current task: No task running")
         self.step_percent = tk.StringVar(value="0.00%")
+        self.eta_status = tk.StringVar(value="")
         self.cpu_status = tk.StringVar(value=f"CPU usage 0% - {self._cpu_model()} | RAM: checking...")
         self.current_line = tk.StringVar(value="Current dialogue: —")
         self.preview_wav_playback_enabled = tk.BooleanVar(value=False)
@@ -161,7 +162,8 @@ class GameDubberApp(tk.Tk):
         self.step=ttk.Progressbar(panel,maximum=20,value=0); self.step.grid(row=14,column=0,columnspan=2,sticky="ew",pady=(2,7))
         ttk.Label(panel, textvariable=self.step_percent, width=8, anchor="e").grid(row=14, column=2, sticky="e", padx=(8, 0), pady=(2, 7))
         ttk.Label(panel, textvariable=self.current_line, justify="left", anchor="w").grid(row=15,column=0,columnspan=3,sticky="ew")
-        ttk.Checkbutton(panel, text="Live preview target-language WAV (slows batch)", variable=self.preview_wav_playback_enabled).grid(row=16,column=0,columnspan=3,sticky="w",pady=(4,0))
+        ttk.Checkbutton(panel, text="Live preview target-language WAV (slows batch)", variable=self.preview_wav_playback_enabled).grid(row=16,column=0,columnspan=2,sticky="w",pady=(4,0))
+        ttk.Label(panel, textvariable=self.eta_status, anchor="e").grid(row=16,column=2,sticky="e",pady=(4,0))
         terminal_font = "Cascadia Code Light"
         self.log=tk.Text(panel,bg="black",fg="#ffd400",font=(terminal_font,8),wrap="word",state="disabled",height=10)
         self.log.tag_configure("english_dialogue", foreground="#a9a9a9")

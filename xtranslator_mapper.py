@@ -1135,6 +1135,7 @@ def _start_full_voiceover_batch_with_adapter(self, resume_run: Path | None = Non
     self.overall_status.set(f'Overall: Step 11 of 11 — Generate {language} Wwise Vorbis WEMs with {engine_name}')
     self.step.configure(maximum=max(1, unique_count), value=0)
     self.step_status.set('Current task: Resuming production — waiting for the next manifest item...')
+    self.eta_status.set('ETA calculating...')
     self.current_line.set('Current dialogue: —')
     self.action_button.configure(state='disabled')
     if hasattr(self, 'reset_button'):
@@ -1238,8 +1239,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             # deferred rows make it a different measure.
                             self.step.configure(maximum=max(1, total), value=min(number, total))
                             self.step_status.set(
-                                f'Current task: {label} — Source WEM {number:,} / {total:,} '
-                                f'· ETA {context.get("eta_text", "calculating...")}'
+                                f'Current task: {label} — Source WEM {number:,} / {total:,}'
                             )
                         # The technical ITEM line below is the single console
                         # record for this event.  Progress and dialogue still
@@ -1324,9 +1324,9 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                         source_item = context.get('latest_attempt_number', number)
                         stage_label = context.get('latest_stage_label', 'Generating target-language WEM')
                         self.step_status.set(
-                            f'Current task: {stage_label} — Source WEM {source_item:,} / {total:,} '
-                            f'· ETA {eta}'
+                            f'Current task: {stage_label} — Source WEM {source_item:,} / {total:,}'
                         )
+                        self.eta_status.set(f'ETA {eta}')
                         dialogue = next((field.split('=', 1)[1] for field in fields if field.startswith('dialogue=')), '')
                         target_text = ''
                         marker = ' target_text='
@@ -1354,6 +1354,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_regeneration_total'] = max(1, retry_total)
                             context['asr_regenerated_sources'] = set()
                             self.step.configure(maximum=max(1, retry_total), value=0)
+                            self.eta_status.set('')
                             self.step_status.set(
                                 f'Current task: Regenerating WEM with {context["engine_name"]} '
                                 f'— 0 / {retry_total:,}'
@@ -1372,6 +1373,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_validation_max_attempts'] = 4
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=group_size, value=0)
+                            self.eta_status.set('')
                             self.step_status.set(
                                 f'Current task: ASR validation — attempt 1/4 | 0 / {group_size:,}'
                             )
@@ -1392,6 +1394,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_validation_max_attempts'] = max_attempts
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=max(1, group_size), value=0)
+                            self.eta_status.set('')
                             self.step_status.set(
                                 f'Current task: ASR validation — attempt {attempt}/{max_attempts} '
                                 f'| 0 / {group_size:,}'
@@ -1458,6 +1461,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                     # a later secondary-model stage rather than spending a
                     # CUDA generation attempt on an unstable short reference.
                     self._append_log('> ' + clean)
+                    self.eta_status.set('')
                     self.step_status.set('Current task: Deferring a short English reference before XTTS generation')
                 elif clean.startswith(('START ', 'MODEL ', 'DONE ', 'RESUME ', 'PAUSE ', 'PAUSED ', 'ERROR ', 'FINAL REPORT ')):
                     self._append_log('> ' + clean.split(' target_text=', 1)[0])
@@ -1473,6 +1477,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
         self.after(50, self._poll_full_voiceover_batch)
         return
     self._full_batch_running = False
+    self.eta_status.set('')
     if hasattr(self, 'reset_button'):
         self.reset_button.configure(state='normal')
     if finished == 3:
