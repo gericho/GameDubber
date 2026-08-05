@@ -2368,6 +2368,20 @@ def _focus_tracked_review_row(self, number: int) -> bool:
     return False
 
 
+def _request_tracked_review_refresh(self) -> None:
+    """Coalesce Track misses into one throttled report refresh."""
+    if getattr(self, '_review_track_refresh_after_id', None) is not None:
+        return
+
+    def refresh() -> None:
+        self._review_track_refresh_after_id = None
+        enabled = getattr(self, 'review_track_enabled', None)
+        if enabled is not None and enabled.get():
+            _refresh_embedded_validation_report(self, schedule=True)
+
+    self._review_track_refresh_after_id = self.after(250, refresh)
+
+
 def _track_review_number(self, number: int) -> None:
     """Keep the embedded report focused on the active production/ASR row."""
     enabled = getattr(self, 'review_track_enabled', None)
@@ -2385,14 +2399,17 @@ def _track_review_number(self, number: int) -> None:
     # rebuilding 1,000 Tk rows for every ASR line froze the interface.
     if not filter_changed and wanted_page == int(getattr(self, '_review_page', 0)):
         # A just-created result may not yet be present in the cached page.
-        # Do not force a full rebuild for it: the periodic throttled refresh
-        # will add it shortly, while the current blue selection remains intact.
-        _focus_tracked_review_row(self, number)
+        # Request one coalesced, throttled refresh rather than rebuilding a
+        # thousand rows for every progress event.
+        if not _focus_tracked_review_row(self, number):
+            self._review_render_key = None
+            _request_tracked_review_refresh(self)
         return
     self._review_page = wanted_page
     self._review_render_key = None
     _refresh_embedded_validation_report(self, schedule=False)
-    _focus_tracked_review_row(self, number)
+    if not _focus_tracked_review_row(self, number):
+        _request_tracked_review_refresh(self)
 
 
 def _review_click(self, event) -> None:
