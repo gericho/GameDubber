@@ -2271,7 +2271,18 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     prepared.sort(key=lambda item: (item[0] <= 0, item[0], item[1]))
     page_size = 1000
     pages = max(1, (len(prepared) + page_size - 1) // page_size)
+    # Journal rows are not a numerically continuous list: deferred items,
+    # retries and legacy entries mean source number 35,090 is not necessarily
+    # on report page 36.  Preserve the real report position for Track.
+    self._review_page_by_number = {
+        number: index // page_size
+        for index, (number, _source, _row, _state, _label, _attempts) in enumerate(prepared)
+        if number > 0
+    }
+    tracked = int(getattr(self, '_review_tracked_number', 0) or 0)
     page = min(max(0, int(getattr(self, '_review_page', 0))), pages - 1)
+    if track_enabled and tracked in self._review_page_by_number:
+        page = self._review_page_by_number[tracked]
     self._review_page = page
     render_key = (cache.get('version', 0), bool(self.review_only_unvalidated.get()), search_text, page)
     if render_key == getattr(self, '_review_render_key', None):
@@ -2298,7 +2309,6 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     # A render replaces Treeview entries, which also clears Tk's blue
     # selection.  Keep Track visibly attached to the active line across the
     # periodic report refresh instead of only selecting it on new events.
-    tracked = int(getattr(self, '_review_tracked_number', 0) or 0)
     if getattr(self, 'review_track_enabled', None) is not None and self.review_track_enabled.get() and tracked:
         _focus_tracked_review_row(self, tracked)
     self.review_previous_button.configure(state='normal' if page else 'disabled')
@@ -2393,7 +2403,13 @@ def _track_review_number(self, number: int) -> None:
     filter_changed = bool(self.review_only_unvalidated.get())
     if filter_changed:
         self.review_only_unvalidated.set(False)
-    wanted_page = (number - 1) // 1000
+    # Use the actual report location, not ``number // 1000``: the report is
+    # a journal and can contain missing or additional entries.
+    wanted_page = getattr(self, '_review_page_by_number', {}).get(number)
+    if wanted_page is None:
+        self._review_render_key = None
+        _request_tracked_review_refresh(self)
+        return
     # Whisper can emit several events per second.  When the row already
     # belongs to the displayed page, moving selection/scrollbar is O(1);
     # rebuilding 1,000 Tk rows for every ASR line froze the interface.
