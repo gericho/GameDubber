@@ -2336,11 +2336,22 @@ def _review_context_menu(self, event) -> None:
     source, row, state = self._review_tree_rows[item_id]
     busy = bool(getattr(self, '_full_batch_running', False) or getattr(self, '_review_manual_running', False))
     menu = tk.Menu(self, tearoff=False)
-    menu.add_command(label='Test with ASR', state='disabled' if busy or state == 'available' else 'normal', command=lambda: _test_review_asr(self, source, row))
-    menu.add_separator()
     menu.add_command(label='●  Validate', foreground='#179b3a', state='disabled' if busy or state == 'available' else 'normal', command=lambda: _set_review_validation(self, source, True))
     menu.add_command(label='●  Reject', foreground='#d32121', state='disabled' if busy or state == 'available' else 'normal', command=lambda: _set_review_validation(self, source, False))
     menu.add_separator()
+    models = tk.Menu(menu, tearoff=False)
+    for name, engine, _description in _available_generation_models():
+        if engine != 'whisper_asr':
+            models.add_command(label=name, state='disabled' if busy or state == 'available' else 'normal', command=lambda value=engine: _regenerate_review_row(self, source, row, value))
+    # Make the primary manual action visually prominent without changing
+    # menu-wide font settings or the appearance of secondary actions.
+    menu.add_cascade(
+        label='Generate from subtitle', menu=models,
+        state='disabled' if busy or state == 'available' else 'normal',
+        font=('Segoe UI', 9, 'bold'),
+    )
+    menu.add_separator()
+    menu.add_command(label='Test with ASR', state='disabled' if busy or state == 'available' else 'normal', command=lambda: _test_review_asr(self, source, row))
     menu.add_command(
         label='Listen to original English voice',
         state='disabled' if busy or state == 'available' else 'normal',
@@ -2352,30 +2363,20 @@ def _review_context_menu(self, event) -> None:
         command=lambda: _import_review_original_wem(self, source, row),
     )
     menu.add_separator()
-    for backend, label in (
-        ('translategemma', 'Transcribe, TranslateGemma and generate'),
-        ('nllb', 'Transcribe, NLLB and generate'),
-    ):
-        translated_models = tk.Menu(menu, tearoff=False)
-        for name, engine, _description in _available_generation_models():
-            if engine != 'whisper_asr':
-                translated_models.add_command(
-                    label=name,
-                    state='disabled' if busy or state == 'available' else 'normal',
-                    command=lambda value=engine, translator=backend: _transcribe_translate_and_regenerate_review_row(
-                        self, source, row, value, translator,
-                    ),
-                )
-        menu.add_cascade(
-            label=label, menu=translated_models,
-            state='disabled' if busy or state == 'available' else 'normal',
-        )
-    menu.add_separator()
-    models = tk.Menu(menu, tearoff=False)
+    translated_models = tk.Menu(menu, tearoff=False)
     for name, engine, _description in _available_generation_models():
         if engine != 'whisper_asr':
-            models.add_command(label=name, state='disabled' if busy or state == 'available' else 'normal', command=lambda value=engine: _regenerate_review_row(self, source, row, value))
-    menu.add_cascade(label='Generate from subtitle', menu=models, state='disabled' if busy or state == 'available' else 'normal')
+            translated_models.add_command(
+                label=name,
+                state='disabled' if busy or state == 'available' else 'normal',
+                command=lambda value=engine: _transcribe_translate_and_regenerate_review_row(
+                    self, source, row, value,
+                ),
+            )
+    menu.add_cascade(
+        label='Transcribe, TranslateGemma and generate', menu=translated_models,
+        state='disabled' if busy or state == 'available' else 'normal',
+    )
     menu.tk_popup(event.x_root, event.y_root)
     menu.grab_release()
 
@@ -2573,9 +2574,7 @@ print(json.dumps({'transcript':' '.join(s.text.strip() for s in segments).strip(
     self.after(100, receive_result)
 
 
-def _transcribe_translate_and_regenerate_review_row(
-    self, source: str, row: dict, engine: str, translation_backend: str = 'translategemma',
-) -> None:
+def _transcribe_translate_and_regenerate_review_row(self, source: str, row: dict, engine: str) -> None:
     """Whisper English, translate on CUDA, then synthesize one target WEM."""
     if getattr(self, '_full_batch_running', False) or getattr(self, '_review_manual_running', False):
         return
@@ -2591,7 +2590,6 @@ def _transcribe_translate_and_regenerate_review_row(
     output_wem = Path(str(row.get('output_wem_path', '')))
     whisper_model = WORK_ROOT / 'models' / 'whisper-large-v3-turbo'
     asr_runtime = WORK_ROOT / 'runtimes' / 'voxcpm' / 'Scripts' / 'python.exe'
-    nllb_model = WORK_ROOT / 'models' / 'NLLB-200-distilled-600M'
     translategemma_model = WORK_ROOT / 'models' / 'TranslateGemma-4B-Q4' / 'translategemma-4b-it.Q4_K_M.gguf'
     llama_cli = WORK_ROOT.parent / 'tools' / 'llama-cpp' / 'llama-cli.exe'
     script = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'manual_review_transcribe_translate_generate.py'
@@ -2601,19 +2599,10 @@ def _transcribe_translate_and_regenerate_review_row(
                 isinstance(wwise_console, Path) and wwise_console.is_file(), project.is_file())):
         self._append_log('> Transcribe, translate and generate unavailable: a local model, tool, archive, or Wwise component is missing.', 'asr_fail')
         return
-    if translation_backend == 'translategemma':
-        if not translategemma_model.is_file() or not llama_cli.is_file():
-            self._append_log('> TranslateGemma unavailable: its Q4 model or CUDA llama.cpp runtime is missing.', 'asr_fail')
-            return
-        translator_label = 'TranslateGemma Q4 CUDA'
-    elif translation_backend == 'nllb':
-        if not nllb_model.is_dir():
-            self._append_log('> NLLB unavailable: its local model is missing.', 'asr_fail')
-            return
-        translator_label = 'NLLB'
-    else:
-        self._append_log('> Transcribe, translate and generate unavailable: unknown translation backend.', 'asr_fail')
+    if not translategemma_model.is_file() or not llama_cli.is_file():
+        self._append_log('> TranslateGemma unavailable: its Q4 model or CUDA llama.cpp runtime is missing.', 'asr_fail')
         return
+    translator_label = 'TranslateGemma Q4 CUDA'
     target_language = str(row.get('target_language', '')).strip().lower()
     if target_language not in {'de', 'en', 'es', 'fr', 'it', 'ja', 'pl', 'ptbr', 'zhhans'}:
         self._append_log('> Transcribe, translate and generate unavailable: selected target language is not supported.', 'asr_fail')
@@ -2638,8 +2627,7 @@ def _transcribe_translate_and_regenerate_review_row(
                 '--wwise-console', str(wwise_console), '--wwise-project', str(project),
                 '--work-dir', str(temp_root), '--phonetic-dictionary-root', str(WORK_ROOT / 'phonetic_dictionaries'),
                 '--whisper-model', str(whisper_model), '--asr-runtime', str(asr_runtime), '--asr-script', str(asr_script),
-                '--translation-backend', translation_backend,
-                '--nllb-model', str(nllb_model), '--translategemma-model', str(translategemma_model),
+                '--translategemma-model', str(translategemma_model),
                 '--llama-cli', str(llama_cli),
                 '--voxcpm-steps', str(voxcpm_steps), '--number', str(int(row.get('number', 0))),
             ]

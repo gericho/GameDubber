@@ -18,12 +18,6 @@ except AttributeError:
     pass
 
 
-NLLB_TARGET_LANGUAGES = {
-    'de': 'deu_Latn', 'en': 'eng_Latn', 'es': 'spa_Latn', 'fr': 'fra_Latn',
-    'it': 'ita_Latn', 'ja': 'jpn_Jpan', 'pl': 'pol_Latn',
-    'ptbr': 'por_Latn', 'zhhans': 'zho_Hans',
-}
-
 TRANSLATEGEMMA_TARGET_LANGUAGES = {
     'de': ('German', 'de-DE'), 'en': ('English', 'en-US'),
     'es': ('Spanish', 'es-ES'), 'fr': ('French', 'fr-FR'),
@@ -31,31 +25,6 @@ TRANSLATEGEMMA_TARGET_LANGUAGES = {
     'pl': ('Polish', 'pl-PL'), 'ptbr': ('Portuguese (Brazil)', 'pt-BR'),
     'zhhans': ('Chinese (Simplified)', 'zh-CN'),
 }
-
-
-def translate_english_with_nllb(text: str, model_path: Path, target_language: str) -> str:
-    """Translate English ASR text locally, releasing CUDA before TTS is loaded."""
-    target_code = NLLB_TARGET_LANGUAGES.get(target_language.lower())
-    if not target_code:
-        raise ValueError(f'NLLB does not have a configured target code for {target_language!r}')
-    import torch
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-    print('TRANSLATE loading local NLLB-200 distilled 600M', flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(str(model_path), src_lang='eng_Latn', local_files_only=True)
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        str(model_path), torch_dtype=torch.float16, local_files_only=True,
-    ).to('cuda').eval()
-    try:
-        encoded = tokenizer(text, return_tensors='pt', truncation=True, max_length=512).to('cuda')
-        generated = model.generate(
-            **encoded, forced_bos_token_id=tokenizer.convert_tokens_to_ids(target_code),
-            max_new_tokens=200, num_beams=4, do_sample=False,
-        )
-        return tokenizer.batch_decode(generated, skip_special_tokens=True)[0].strip()
-    finally:
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
 
 
 def translate_english_with_translategemma(
@@ -129,8 +98,6 @@ def main() -> int:
     parser.add_argument('--whisper-model', type=Path, required=True)
     parser.add_argument('--asr-runtime', type=Path, required=True)
     parser.add_argument('--asr-script', type=Path, required=True)
-    parser.add_argument('--translation-backend', choices=('nllb', 'translategemma'), default='nllb')
-    parser.add_argument('--nllb-model', type=Path)
     parser.add_argument('--translategemma-model', type=Path)
     parser.add_argument('--llama-cli', type=Path)
     parser.add_argument('--voxcpm-steps', type=int, default=6)
@@ -173,16 +140,10 @@ def main() -> int:
     if not transcript:
         raise RuntimeError('Whisper returned an empty English transcript')
     print(f'TRANSCRIBE English: {transcript}', flush=True)
-    if args.translation_backend == 'translategemma':
-        translated = translate_english_with_translategemma(
-            transcript, args.translategemma_model, args.llama_cli, args.language,
-        )
-        translator_name = 'TranslateGemma'
-    else:
-        if args.nllb_model is None:
-            raise RuntimeError('NLLB model path is missing')
-        translated = translate_english_with_nllb(transcript, args.nllb_model, args.language)
-        translator_name = 'NLLB'
+    translated = translate_english_with_translategemma(
+        transcript, args.translategemma_model, args.llama_cli, args.language,
+    )
+    translator_name = 'TranslateGemma'
     if not translated:
         raise RuntimeError(f'{translator_name} returned an empty target-language translation')
     print(f'TRANSLATE target ({args.language}): {translated}', flush=True)
