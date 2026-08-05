@@ -2159,12 +2159,7 @@ def _review_sync(self, run_dir: Path) -> dict:
 
 def _review_state(cache: dict, source: str, row: dict) -> tuple[str, str, int]:
     if row.get('status') == 'deferred_short_reference':
-        duration = row.get('reference_duration_ms')
-        minimum = row.get('xtts_minimum_reference_duration_ms')
-        detail = f'{duration} ms' if isinstance(duration, int) else 'short English reference'
-        if isinstance(minimum, int):
-            detail += f' (XTTS minimum {minimum} ms)'
-        return 'deferred', f'Deferred: {detail}', 0
+        return 'deferred', 'Deferred', 0
     wem = Path(str(row.get('output_wem_path', '')))
     available = row.get('status') == 'wem_generated' and wem.is_file()
     if not available:
