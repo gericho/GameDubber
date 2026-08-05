@@ -1632,7 +1632,7 @@ def main() -> int:
                             })
                             voxcpm_fallback_rows[internal_path] = row
                             print(
-                                f"DEFERRED SHORT {number}/{total} stage=short_english_reference "
+                                f"DEFERRED Short WEM {number}/{total} stage=short_english_reference "
                                 f"duration_ms={english_duration_ms} minimum_ms={XTTS_MIN_REFERENCE_DURATION_MS}",
                                 flush=True,
                             )
