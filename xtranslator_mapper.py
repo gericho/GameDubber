@@ -1779,11 +1779,27 @@ def _offer_production_resume_after_detection(self, path: Path) -> None:
     except (OSError, ValueError, KeyError, TypeError):
         _clear_production_resume_state()
         return
-    if not run_dir.is_dir() or state.get('status') != 'paused' or _generation_engine_config(engine) is None:
+    if not run_dir.is_dir() or _generation_engine_config(engine) is None:
         _clear_production_resume_state()
         return
     completed = _resume_completed_count(run_dir)
     total = int(state.get('total', 0))
+    status = str(state.get('status', '')).strip().lower()
+    # A force-terminated GUI cannot run its normal child-exit callback.  Its
+    # checkpoint can therefore still say ``active`` or ``pause_requested``
+    # even though no worker survives.  Those are valid incomplete runs, not
+    # corrupt state: convert them into a normal resumable checkpoint.
+    if status != 'paused':
+        if status in {'active', 'pause_requested'} and completed and total and completed < total:
+            _write_production_run_state(
+                run_dir, language, engine, str(state.get('engine_name', engine)), total,
+                'paused', state.get('voxcpm_steps'), _resume_game_folder(state),
+            )
+            state['status'] = 'paused'
+            self._append_log(f'> Recovered interrupted production run for resume: {completed:,} final WEMs | {run_dir}')
+        else:
+            _clear_production_resume_state()
+            return
     game_folder = _resume_game_folder(state)
     if game_folder:
         self.game_path.set(game_folder)
