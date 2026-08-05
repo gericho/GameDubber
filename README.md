@@ -3,6 +3,8 @@
 [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/gerichoit)
 [![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-30363D?logo=githubsponsors&logoColor=EA4AAA)](https://github.com/sponsors/gericho)
 
+Donations to support the project are greatly appreciated!
+
 GameDubber is a local tool for creating AI voice-over mods for Bethesda games, initially designed for **Starfield**. It analyses a legitimate game installation in read-only mode, links subtitles to original voices, and generates new voice-over in a selected target language.
 
 > Status: active ALPHA development. Do not distribute output containing identifiable performances or voices unless you hold the necessary rights.
