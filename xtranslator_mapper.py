@@ -2169,7 +2169,7 @@ def _review_state(cache: dict, source: str, row: dict) -> tuple[str, str, int]:
     asr = cache['asr'].get(source)
     if asr:
         return ('validated', 'Validated', int(asr['attempts'])) if asr['validated'] else ('not_validated', 'Not validated', int(asr['attempts']))
-    return 'not_validated', 'Not validated', 0
+    return 'not_validated', 'Not yet validated', 0
 
 
 def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
