@@ -200,7 +200,7 @@ class GameDubberApp(tk.Tk):
         ttk.Label(report_toolbar, textvariable=self.review_status, anchor="e").grid(row=0, column=11, sticky="ew")
         report_columns = ("number", "subtitle", "validation", "attempts", "duration")
         self.review_tree = ttk.Treeview(self.validation_report, columns=report_columns, show="headings", selectmode="browse", height=14)
-        self.review_tree.heading("number", text="#"); self.review_tree.heading("subtitle", text="Target dialogue"); self.review_tree.heading("validation", text="Validation"); self.review_tree.heading("attempts", text="Attempts"); self.review_tree.heading("duration", text="ms")
+        self.review_tree.heading("number", text="#"); self.review_tree.heading("subtitle", text="Target dialogue"); self.review_tree.heading("validation", text="Validation"); self.review_tree.heading("attempts", text="Attempts"); self.review_tree.heading("duration", text="Duration")
         self.review_tree.column("number", width=72, minwidth=60, anchor="e", stretch=False)
         self.review_tree.column("subtitle", width=825, minwidth=260, anchor="w")
         self.review_tree.column("validation", width=130, minwidth=110, anchor="center", stretch=False)

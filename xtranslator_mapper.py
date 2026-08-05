@@ -2223,7 +2223,7 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
             values=(
                 f'{number:,}' if number else '—',
                 str(row.get('official_subtitle', '')), label, f'{attempts}/5' if attempts else '—',
-                f'{int(english_duration):,}' if isinstance(english_duration, (int, float)) else '—',
+                f'{float(english_duration) / 1000:.1f} s' if isinstance(english_duration, (int, float)) else '—',
             ),
             tags=(state,),
         )
