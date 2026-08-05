@@ -2228,6 +2228,12 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
             tags=(state,),
         )
         self._review_tree_rows[item_id] = (source, row, state)
+    # A render replaces Treeview entries, which also clears Tk's blue
+    # selection.  Keep Track visibly attached to the active line across the
+    # periodic report refresh instead of only selecting it on new events.
+    tracked = int(getattr(self, '_review_tracked_number', 0) or 0)
+    if getattr(self, 'review_track_enabled', None) is not None and self.review_track_enabled.get() and tracked:
+        _focus_tracked_review_row(self, tracked)
     self.review_previous_button.configure(state='normal' if page else 'disabled')
     self.review_next_button.configure(state='normal' if page + 1 < pages else 'disabled')
     self.review_jump_previous_button.configure(state='normal' if page >= 5 else 'disabled')

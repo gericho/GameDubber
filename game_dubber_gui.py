@@ -161,7 +161,7 @@ class GameDubberApp(tk.Tk):
         self.step=ttk.Progressbar(panel,maximum=20,value=0); self.step.grid(row=14,column=0,columnspan=2,sticky="ew",pady=(2,7))
         ttk.Label(panel, textvariable=self.step_percent, width=8, anchor="e").grid(row=14, column=2, sticky="e", padx=(8, 0), pady=(2, 7))
         ttk.Label(panel, textvariable=self.current_line, justify="left", anchor="w").grid(row=15,column=0,columnspan=3,sticky="ew")
-        ttk.Checkbutton(panel, text="Live preview target-language WAV (may slow batch)", variable=self.preview_wav_playback_enabled).grid(row=16,column=0,columnspan=3,sticky="w",pady=(4,0))
+        ttk.Checkbutton(panel, text="Live preview target-language WAV (slows batch)", variable=self.preview_wav_playback_enabled).grid(row=16,column=0,columnspan=3,sticky="w",pady=(4,0))
         terminal_font = "Cascadia Code Light"
         self.log=tk.Text(panel,bg="black",fg="#ffd400",font=(terminal_font,8),wrap="word",state="disabled",height=10)
         self.log.tag_configure("english_dialogue", foreground="#a9a9a9")
