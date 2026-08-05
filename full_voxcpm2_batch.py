@@ -178,9 +178,9 @@ _TARGET_LANGUAGE_SETTINGS = {
 # Derived from the local XTTS duration audit.  This is deliberately a source
 # audio criterion, not a subtitle-word-count heuristic: a five-word line can
 # still be too short for stable voice cloning when its English reference lasts
-# less than two seconds.  Longer references use the normal automatic ASR
+# less than 1.5 seconds.  Longer references use the normal automatic ASR
 # retry cycle before anything is deferred.
-XTTS_MIN_REFERENCE_DURATION_MS = 2000
+XTTS_MIN_REFERENCE_DURATION_MS = 1500
 
 # Faster-Whisper expects an ISO language identifier rather than the game
 # archive locale.  Keep this mapping separate from each TTS backend's own
