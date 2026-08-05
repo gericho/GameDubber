@@ -200,7 +200,7 @@ def reset(self):
     self._full_batch_running = False
     root = __import__('game_dubber_gui').WORK_ROOT
     named = ('voice_pipeline.db', 'voice_pipeline.db-shm', 'voice_pipeline.db-wal', 'discovery', 'input', 'manifests', 'samples', 'analysis', 'asr', 'output', 'production_resume.json')
-    if not messagebox.askyesno('Reset local pipeline data', 'This removes all local pipeline data under work, including generated target-language WAV output and previous production runs.\n\nIt does not touch C:\\Games\\Starfield, work\\models, or work\\logs. Continue?', parent=self):
+    if not messagebox.askyesno('Reset local pipeline data', 'This removes all local pipeline data under work, including generated target-language WAV output and previous production runs.\n\nIt does not touch the game installation, work\\models, or work\\logs. Continue?', parent=self):
         self._append_log('> Clean rebuild cancelled; existing local pipeline data was kept.')
         return
     runs = _production_runs_under_output(root)
