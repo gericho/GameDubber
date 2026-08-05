@@ -2227,8 +2227,8 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
             '', 'end', iid=item_id,
             values=(
                 f'{number:,}' if number else '—',
-                f'{int(english_duration):,}' if isinstance(english_duration, (int, float)) else '—',
                 str(row.get('official_subtitle', '')), label, f'{attempts}/5' if attempts else '—',
+                f'{int(english_duration):,}' if isinstance(english_duration, (int, float)) else '—',
             ),
             tags=(state,),
         )

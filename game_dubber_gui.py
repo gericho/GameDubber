@@ -26,8 +26,8 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 SOURCE_ROOT = Path(__file__).resolve().parent
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 WORK_ROOT = APP_ROOT / "work" if getattr(sys, "frozen", False) else SOURCE_ROOT / "work"
-APP_VERSION = "ALPHA 0.1.58"
-BUILD_TIMESTAMP = "2026-08-05 21:26:30"
+APP_VERSION = "ALPHA 0.1.59"
+BUILD_TIMESTAMP = "2026-08-05 21:28:09"
 
 class FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
@@ -198,14 +198,14 @@ class GameDubberApp(tk.Tk):
         self.review_redo_button = ttk.Button(report_toolbar, text="Redo", width=5, padding=(2, 0), command=lambda: getattr(self, "_redo_review_override", lambda: None)(), state="disabled")
         self.review_redo_button.grid(row=0, column=10, padx=(0, 8))
         ttk.Label(report_toolbar, textvariable=self.review_status, anchor="e").grid(row=0, column=11, sticky="ew")
-        report_columns = ("number", "english_duration", "subtitle", "validation", "attempts")
+        report_columns = ("number", "subtitle", "validation", "attempts", "duration")
         self.review_tree = ttk.Treeview(self.validation_report, columns=report_columns, show="headings", selectmode="browse", height=14)
-        self.review_tree.heading("number", text="#"); self.review_tree.heading("english_duration", text="English ms"); self.review_tree.heading("subtitle", text="Target dialogue"); self.review_tree.heading("validation", text="Validation"); self.review_tree.heading("attempts", text="Attempts")
+        self.review_tree.heading("number", text="#"); self.review_tree.heading("subtitle", text="Target dialogue"); self.review_tree.heading("validation", text="Validation"); self.review_tree.heading("attempts", text="Attempts"); self.review_tree.heading("duration", text="ms")
         self.review_tree.column("number", width=72, minwidth=60, anchor="e", stretch=False)
-        self.review_tree.column("english_duration", width=84, minwidth=78, anchor="e", stretch=False)
         self.review_tree.column("subtitle", width=825, minwidth=260, anchor="w")
         self.review_tree.column("validation", width=130, minwidth=110, anchor="center", stretch=False)
         self.review_tree.column("attempts", width=80, minwidth=70, anchor="center", stretch=False)
+        self.review_tree.column("duration", width=84, minwidth=78, anchor="e", stretch=False)
         self.review_tree.tag_configure("available", foreground="#808080")
         self.review_tree.tag_configure("deferred", foreground="#d97904")
         self.review_tree.tag_configure("validated", foreground="#179b3a")
