@@ -1229,8 +1229,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['latest_stage_label'] = label
                             self.step.configure(maximum=retry_total, value=retry_position)
                             self.step_status.set(
-                                f'Current task: {label} — ASR group {retry_group:,} '
-                                f'| {retry_position:,} / {retry_total:,}'
+                                f'Current task: {label} — {retry_position:,} / {retry_total:,}'
                             )
                         else:
                             # The Current task bar follows the same
@@ -1357,7 +1356,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             self.step.configure(maximum=max(1, retry_total), value=0)
                             self.step_status.set(
                                 f'Current task: Regenerating WEM with {context["engine_name"]} '
-                                f'— ASR group {group_number:,} | 0 / {retry_total:,}'
+                                f'— 0 / {retry_total:,}'
                             )
                         self._append_log('> ' + clean)
                         continue
@@ -1374,8 +1373,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=group_size, value=0)
                             self.step_status.set(
-                                f'Current task: ASR validation — group {group_number:,} '
-                                f'| attempt 1/5 | 0 / {group_size:,}'
+                                f'Current task: ASR validation — attempt 1/5 | 0 / {group_size:,}'
                             )
                         self._append_log('> ' + clean)
                         continue
@@ -1395,8 +1393,8 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=max(1, group_size), value=0)
                             self.step_status.set(
-                                f'Current task: ASR validation — group {group_number:,} '
-                                f'| attempt {attempt}/{max_attempts} | 0 / {group_size:,}'
+                                f'Current task: ASR validation — attempt {attempt}/{max_attempts} '
+                                f'| 0 / {group_size:,}'
                             )
                         self._append_log('> ' + clean)
                         continue
@@ -1440,7 +1438,6 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             checked_sources.add(asr_number)
                         checked = len(checked_sources)
                         total_asr = max(1, int(context.get('asr_group_size', 500)))
-                        group_number = context.get('asr_group_number')
                         attempt_match = re.search(r'\battempt=(\d+)/(\d+)', clean)
                         if attempt_match:
                             context['asr_validation_attempt'] = int(attempt_match.group(1))
@@ -1448,10 +1445,9 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                         attempt = int(context.get('asr_validation_attempt', 1))
                         max_attempts = int(context.get('asr_validation_max_attempts', 5))
                         self.step.configure(maximum=total_asr, value=min(checked, total_asr))
-                        group_label = f'group {int(group_number):,} | ' if group_number else ''
                         self.step_status.set(
-                            f'Current task: ASR validation — {group_label}'
-                            f'attempt {attempt}/{max_attempts} | {checked:,} / {total_asr:,}'
+                            f'Current task: ASR validation — attempt {attempt}/{max_attempts} '
+                            f'| {checked:,} / {total_asr:,}'
                         )
                     else:
                         self._append_log('> ' + clean, tag)
