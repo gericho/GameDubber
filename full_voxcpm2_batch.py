@@ -175,6 +175,12 @@ _TARGET_LANGUAGE_SETTINGS = {
     'zhhans': {'qwen': 'Chinese', 'chatterbox': 'zh', 'xtts': 'zh-cn', 'zonos': 'zh_cn'},
 }
 
+# Derived from the local XTTS duration audit.  This is deliberately a source
+# audio criterion, not a subtitle-word-count heuristic: a five-word line can
+# still be too short for stable voice cloning when its English reference lasts
+# less than five seconds.
+XTTS_MIN_REFERENCE_DURATION_MS = 5000
+
 # Faster-Whisper expects an ISO language identifier rather than the game
 # archive locale.  Keep this mapping separate from each TTS backend's own
 # locale mapping above: production validation must always follow the language
@@ -372,6 +378,7 @@ def match_reference_format(generated: np.ndarray, generated_rate: int, reference
     metrics = {
         "reference_sample_rate": int(reference_rate),
         "reference_channels": int(target_channels),
+        "reference_duration_ms": round(len(reference) * 1000 / reference_rate),
         "reference_rms_dbfs": source["rms_dbfs"],
         "reference_peak_dbfs": source["peak_dbfs"],
         "output_rms_dbfs": after["rms_dbfs"],
@@ -421,7 +428,7 @@ def setup_database(connection: sqlite3.Connection) -> None:
         output_wav_path TEXT NOT NULL, status TEXT NOT NULL, reference_sample_rate INTEGER,
         reference_channels INTEGER, reference_rms_dbfs REAL, reference_peak_dbfs REAL,
         output_rms_dbfs REAL, output_peak_dbfs REAL, normalization_gain_db REAL,
-        output_duration_ms INTEGER, error TEXT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+        reference_duration_ms INTEGER, output_duration_ms INTEGER, error TEXT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
         generation_engine TEXT, voxcpm_steps INTEGER, generation_seed INTEGER, output_opus_path TEXT,
         opus_bitrate_kbps INTEGER, opus_duration_ms INTEGER,
         output_wem_path TEXT, wwise_conversion TEXT, wem_bitrate_kbps INTEGER,
@@ -448,6 +455,8 @@ def setup_database(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE production_voice_outputs ADD COLUMN wem_bitrate_kbps INTEGER")
     if "wem_duration_ms" not in columns:
         connection.execute("ALTER TABLE production_voice_outputs ADD COLUMN wem_duration_ms INTEGER")
+    if "reference_duration_ms" not in columns:
+        connection.execute("ALTER TABLE production_voice_outputs ADD COLUMN reference_duration_ms INTEGER")
     connection.commit()
 
 
@@ -457,17 +466,17 @@ def record_database(connection: sqlite3.Connection, run_id: str, row: dict) -> N
          canonical_subtitle, synthesis_text, output_wav_path, status,
          reference_sample_rate, reference_channels, reference_rms_dbfs,
          reference_peak_dbfs, output_rms_dbfs, output_peak_dbfs,
-         normalization_gain_db, output_duration_ms, error, started_at,
+         normalization_gain_db, reference_duration_ms, output_duration_ms, error, started_at,
          finished_at, generation_engine, voxcpm_steps, generation_seed, output_opus_path,
          opus_bitrate_kbps, opus_duration_ms, output_wem_path, wwise_conversion,
          wem_bitrate_kbps, wem_duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
         run_id, row.get("source_audio_path"), row.get("target_language"), row.get("dialogue_id"),
         row.get("voice_id"), row.get("official_subtitle", ""), row.get("synthesis_text", ""),
         row.get("output_wav_path", ""), row.get("status"), row.get("reference_sample_rate"),
         row.get("reference_channels"), row.get("reference_rms_dbfs"), row.get("reference_peak_dbfs"),
         row.get("output_rms_dbfs"), row.get("output_peak_dbfs"), row.get("normalization_gain_db"),
-        row.get("duration_ms"), row.get("error"), row.get("started_at"), row.get("finished_at"),
+        row.get("reference_duration_ms"), row.get("duration_ms"), row.get("error"), row.get("started_at"), row.get("finished_at"),
         row.get("generation_engine"), row.get("voxcpm_steps"), row.get("generation_seed"), row.get("output_opus_path"),
         row.get("opus_bitrate_kbps"), row.get("opus_duration_ms"),
         row.get("output_wem_path"), row.get("wwise_conversion"),
@@ -724,6 +733,14 @@ def extract_and_decode_english_wav(reader: Path, decoder: Path, archive: Path, i
         raise RuntimeError(decode.stderr.strip() or decode.stdout.strip() or "WEM decode failed")
 
 
+def reference_wav_duration_ms(path: Path) -> int:
+    """Return the decoded English reference duration without loading CUDA."""
+    info = sf.info(path)
+    if info.samplerate <= 0 or info.frames <= 0:
+        raise RuntimeError("English reference WAV has no valid duration")
+    return round(info.frames * 1000 / info.samplerate)
+
+
 def retain_original_wem(reader: Path, decoder: Path, archive: Path, internal_path: str,
                         output_wem: Path) -> None:
     """Extract one original non-verbal WEM into the final mod tree unchanged."""
@@ -944,6 +961,7 @@ def main() -> int:
         pause_request_path.unlink(missing_ok=True)
 
     completed_sources: set[str] = set()
+    deferred_sources: set[str] = set()
     completed_result_rows: list[dict] = []
     if args.resume and results_path.is_file():
         with results_path.open("r", encoding="utf-8") as previous_results:
@@ -958,9 +976,14 @@ def main() -> int:
                         completed_sources.add(str(previous.get("source_audio_path", "")))
                         if previous.get("status") == "wem_generated":
                             completed_result_rows.append(previous)
+                    elif previous.get("status") == "deferred_short_reference":
+                        # The dedicated later-stage queue owns this source.
+                        # Do not repeatedly extract it on every resume while
+                        # the current XTTS-only phase is intentionally active.
+                        deferred_sources.add(str(previous.get("source_audio_path", "")))
                 except (ValueError, TypeError):
                     continue
-        print(f"RESUME completed={len(completed_sources)} total={total} language={args.language} engine={args.engine}", flush=True)
+        print(f"RESUME completed={len(completed_sources)} deferred_short_reference={len(deferred_sources)} total={total} language={args.language} engine={args.engine}", flush=True)
     completed_max_number = max((int(row.get("number", 0)) for row in completed_result_rows), default=0)
     resume_partial_rows: list[dict] = []
     if args.resume and args.asr_checkpoint_interval and completed_max_number % args.asr_checkpoint_interval:
@@ -1058,13 +1081,11 @@ def main() -> int:
             def pending_rows():
                 for line in selection:
                     row = json.loads(line)
-                    if str(row["source_audio_path"]) not in completed_sources:
+                    if str(row["source_audio_path"]) not in completed_sources and str(row["source_audio_path"]) not in deferred_sources:
                         if is_nonverbal_subtitle(str(row.get("official_subtitle", ""))):
                             # Asterisk subtitles are exceptions, not proof of
                             # silence.  Do not retain or synthesize them yet.
                             deferred_exception_rows.append(row)
-                        elif len(subtitle_words(str(row.get("official_subtitle", "")))) < 3:
-                            voxcpm_fallback_rows[str(row['source_audio_path'])] = row
                         else:
                             yield row
 
@@ -1211,7 +1232,10 @@ def main() -> int:
                 lines are regenerated together.
                 """
                 nonlocal asr_checked, asr_retry_recovered, asr_unresolved, preview_sequence
-                candidates = [item for item in group if len(subtitle_words(str(item['row'].get('official_subtitle', '')))) >= 3]
+                # Eligibility is based on the measured English reference
+                # duration before XTTS is called.  Word count is deliberately
+                # irrelevant: it remains useful only inside ASR comparison.
+                candidates = list(group)
                 if not candidates:
                     return
                 print(f"ASR GROUP {group_number} start items={len(group)} eligible={len(candidates)}", flush=True)
@@ -1435,10 +1459,7 @@ def main() -> int:
                         number = int(row.get('number', 0))
                         fixed_blocks.setdefault((number - 1) // args.asr_checkpoint_interval, []).append(row)
                     for fixed_block, block_rows in sorted(fixed_blocks.items()):
-                        eligible_rows = [
-                            row for row in block_rows
-                            if len(subtitle_words(str(row.get('official_subtitle', '')))) >= 3
-                        ]
+                        eligible_rows = list(block_rows)
                         if not eligible_rows:
                             continue
                         accepted_count = sum(str(row.get('source_audio_path', '')) in asr_checked_sources for row in eligible_rows)
@@ -1594,6 +1615,35 @@ def main() -> int:
                         if preparation_error is not None:
                             raise preparation_error
 
+                        # XTTS cloning quality follows the duration of the
+                        # actual English audio, not the number of subtitle
+                        # words.  Record it for every processed source.  A
+                        # short reference is deferred before XTTS ever loads
+                        # or receives the text; the later secondary-model
+                        # phase is intentionally not run by this batch.
+                        english_duration_ms = reference_wav_duration_ms(temp_wav)
+                        result["reference_duration_ms"] = english_duration_ms
+                        if args.engine == "xtts_v2" and english_duration_ms < XTTS_MIN_REFERENCE_DURATION_MS:
+                            result.update({
+                                "status": "deferred_short_reference",
+                                "deferred_reason": "xtts_reference_below_minimum_duration",
+                                "xtts_minimum_reference_duration_ms": XTTS_MIN_REFERENCE_DURATION_MS,
+                            })
+                            voxcpm_fallback_rows[internal_path] = row
+                            print(
+                                f"DEFERRED {number}/{total} stage=short_english_reference "
+                                f"duration_ms={english_duration_ms} minimum_ms={XTTS_MIN_REFERENCE_DURATION_MS}",
+                                flush=True,
+                            )
+                            persist_result({
+                                "row": row, "number": number, "result": result,
+                                "temp_wem": temp_wem, "temp_wav": temp_wav,
+                                "target_wav": target_wav,
+                            })
+                            row = next_row
+                            prepared_future = next_future
+                            continue
+
                         # Publish finished WEMs without holding up the next
                         # GPU call.  If Wwise ever falls persistently behind,
                         # the four-item cap is the only intentional backpressure.
@@ -1667,7 +1717,7 @@ def main() -> int:
                             job['deferred_reason'] = (
                                 'asr_unresolved_after_max_attempts'
                                 if str(source_path) in retry_histories
-                                else 'short_subtitle_requires_voxcpm'
+                                else 'short_english_reference_requires_secondary_engine'
                             )
                             write_json_line(jobs_file, job)
                         for row_data in deferred_exception_rows:

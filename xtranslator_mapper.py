@@ -1354,6 +1354,13 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                     else:
                         self._append_log('> ' + clean, tag)
                         self.step_status.set('Current task: Verifying generated WEMs with target-language ASR')
+                elif clean.startswith('DEFERRED '):
+                    # The XTTS duration gate is evaluated from decoded
+                    # English audio.  It intentionally defers this source to
+                    # a later secondary-model stage rather than spending a
+                    # CUDA generation attempt on an unstable short reference.
+                    self._append_log('> ' + clean)
+                    self.step_status.set('Current task: Deferring a short English reference before XTTS generation')
                 elif clean.startswith(('START ', 'MODEL ', 'DONE ', 'RESUME ', 'PAUSE ', 'PAUSED ', 'ERROR ', 'FINAL REPORT ')):
                     self._append_log('> ' + clean.split(' target_text=', 1)[0])
             elif kind == 'done':
