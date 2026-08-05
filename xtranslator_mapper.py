@@ -1212,6 +1212,12 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             action = {'extract': 'extracting', 'decode_cpu': 'decoding'}.get(prefetch_stage, prefetch_stage)
                             summary.append(f'{action} next {prefetch_number:,}')
                         self._track_review_number(number)
+                        # The Current task bar follows the same source-manifest
+                        # position displayed in its label.  A completed-WEM
+                        # count is intentionally not used here: deferred rows
+                        # and ASR retries make it a different, misleading
+                        # measure of this task's progress.
+                        self.step.configure(maximum=max(1, total), value=min(number, total))
                         self.step_status.set(
                             f'Current task: {label} — Source WEM {number:,} / {total:,} '
                             f'· ETA {context.get("eta_text", "calculating...")}'
@@ -1280,7 +1286,10 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                         context['completed_wems'] = completed
                         context['latest_number'] = completed
                         self._track_review_number(number)
-                        self.step.configure(maximum=max(1, total), value=completed)
+                        # Keep the visible task bar aligned with ``Source
+                        # WEM n / total``.  ``generated`` remains the right
+                        # value for ETA calculations, but not for this bar.
+                        self.step.configure(maximum=max(1, total), value=min(number, total))
                         anchor_completed = int(context.get('eta_anchor_completed', 0))
                         completed_in_session = completed - anchor_completed
                         elapsed = max(0.001, time.monotonic() - context.get('eta_anchor_monotonic', context['started_monotonic']))
@@ -1316,7 +1325,39 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                         # the compact visible Pipeline summary.
                     except (IndexError, ValueError, ZeroDivisionError):
                         pass
-                elif clean.startswith(('ASR ', 'VOX ASR ', 'VOX FALLBACK ', 'ASR GROUP ')):
+                elif clean.startswith(('ASR ', 'VOX ASR ', 'VOX FALLBACK ', 'ASR GROUP ', 'MODEL loading Whisper for ASR group ')):
+                    if clean.startswith('ASR GROUP ') and ' start ' in clean:
+                        group_match = re.search(r'^ASR GROUP (\d+) start items=(\d+)', clean)
+                        if group_match:
+                            group_number = int(group_match.group(1))
+                            group_size = max(1, int(group_match.group(2)))
+                            context['asr_group_number'] = group_number
+                            context['asr_group_size'] = group_size
+                            context['asr_group_checked_sources'] = set()
+                            self.step.configure(maximum=group_size, value=0)
+                            self.step_status.set(
+                                f'Current task: ASR validation — group {group_number:,} | 0 / {group_size:,}'
+                            )
+                        self._append_log('> ' + clean)
+                        continue
+                    if clean.startswith('MODEL loading Whisper for ASR group '):
+                        retry_match = re.search(
+                            r'ASR group (\d+): (\d+) item\(s\), attempt (\d+)/(\d+)', clean
+                        )
+                        if retry_match:
+                            group_number, group_size, attempt, max_attempts = (
+                                int(value) for value in retry_match.groups()
+                            )
+                            context['asr_group_number'] = group_number
+                            context['asr_group_size'] = max(1, group_size)
+                            context['asr_group_checked_sources'] = set()
+                            self.step.configure(maximum=max(1, group_size), value=0)
+                            self.step_status.set(
+                                f'Current task: ASR validation — group {group_number:,} '
+                                f'| attempt {attempt}/{max_attempts} | 0 / {group_size:,}'
+                            )
+                        self._append_log('> ' + clean)
+                        continue
                     if clean.startswith('ASR ') and ' expected=' in clean:
                         # The expected sentence belongs in the dedicated
                         # Current dialogue field.  Duplicating it in the ASR
@@ -1348,10 +1389,21 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                         except (IndexError, ValueError):
                             asr_number, asr_total = 0, int(context.get('unique_count', 0))
                             self._append_log('> ASR WEM validation', tag)
-                        context['asr_checked'] = int(context.get('asr_checked', 0)) + 1
-                        checked = context['asr_checked']; total_asr = max(1, int(context.get('asr_total', 500)))
+                        # Count unique source lines in the active ASR pass.
+                        # A failed line can have up to five attempts; counting
+                        # every attempt made the bar exceed or misrepresent
+                        # the fixed validation group.
+                        checked_sources = context.setdefault('asr_group_checked_sources', set())
+                        if asr_number:
+                            checked_sources.add(asr_number)
+                        checked = len(checked_sources)
+                        total_asr = max(1, int(context.get('asr_group_size', 500)))
+                        group_number = context.get('asr_group_number')
                         self.step.configure(maximum=total_asr, value=min(checked, total_asr))
-                        self.step_status.set(f'Current task: ASR verification — item {asr_number:,} / {asr_total:,} | group {checked:,} / {total_asr:,}')
+                        group_label = f'group {int(group_number):,} | ' if group_number else ''
+                        self.step_status.set(
+                            f'Current task: ASR validation — {group_label}{checked:,} / {total_asr:,}'
+                        )
                     else:
                         self._append_log('> ' + clean, tag)
                         self.step_status.set('Current task: Verifying generated WEMs with target-language ASR')
