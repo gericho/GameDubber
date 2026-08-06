@@ -224,7 +224,10 @@ def normalise_asr_text(text: str, target_language: str = '') -> str:
     """Return a language-aware but non-translating ASR comparison form."""
     value = unicodedata.normalize('NFKD', str(text).lower())
     value = ''.join(char for char in value if not unicodedata.combining(char))
-    value = value.translate(str.maketrans({char: ' ' for char in _APOSTROPHE_VARIANTS}))
+    # Apostrophes are typography, not spoken word boundaries for ASR
+    # comparison: "Dev’essere" and Whisper's "deve essere" should remain
+    # comparable through the subsequent conservative fuzzy alignment.
+    value = value.translate(str.maketrans({char: '' for char in _APOSTROPHE_VARIANTS}))
     value = value.replace('%', ' percent ')
     replacements = _NUMBER_WORDS.get(target_language.lower(), {})
     for phrase, number in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
@@ -266,6 +269,63 @@ def word_error_rate(expected: list[str], actual: list[str]) -> float:
     return previous[-1] / len(expected)
 
 
+def _asr_tokens_equivalent(expected_token: str, recognised_token: str) -> bool:
+    """Allow only a small, language-neutral spelling variation.
+
+    Whisper may slightly alter a long proper name or an inflected word.  This
+    must never turn a missing short function word into a match, so fuzzy
+    matching is restricted to tokens of four or more characters and a narrow
+    edit-distance-like similarity.
+    """
+    if expected_token == recognised_token:
+        return True
+    if min(len(expected_token), len(recognised_token)) < 4:
+        return False
+    if abs(len(expected_token) - len(recognised_token)) > 2:
+        return False
+    return SequenceMatcher(None, expected_token, recognised_token).ratio() >= 0.80
+
+
+def fuzzy_expected_coverage(expected: list[str], recognised: list[str]) -> float:
+    """Return ordered expected-word coverage with safe ASR normalisations.
+
+    Besides exact and narrowly fuzzy long-word matches, this accepts only
+    *exact* split/join forms (``casomai`` / ``caso mai``).  The dynamic
+    programming alignment preserves order, so unrelated words elsewhere in a
+    line cannot inflate the result.
+    """
+    if not expected:
+        return 1.0
+    row_count, column_count = len(expected), len(recognised)
+    scores = [[0] * (column_count + 1) for _ in range(row_count + 1)]
+    for expected_index in range(row_count - 1, -1, -1):
+        for recognised_index in range(column_count - 1, -1, -1):
+            best = max(
+                scores[expected_index + 1][recognised_index],
+                scores[expected_index][recognised_index + 1],
+            )
+            if _asr_tokens_equivalent(expected[expected_index], recognised[recognised_index]):
+                best = max(best, 1 + scores[expected_index + 1][recognised_index + 1])
+            # A compound may be split or joined by ASR.  Use the same narrow
+            # long-word fuzzy rule here too: this accepts a harmless elision
+            # variation such as ``devesserci`` / ``deve esserci``, while
+            # still rejecting short or materially different words.
+            if (expected_index + 1 < row_count
+                    and _asr_tokens_equivalent(
+                        expected[expected_index] + expected[expected_index + 1],
+                        recognised[recognised_index],
+                    )):
+                best = max(best, 2 + scores[expected_index + 2][recognised_index + 1])
+            if (recognised_index + 1 < column_count
+                    and _asr_tokens_equivalent(
+                        expected[expected_index],
+                        recognised[recognised_index] + recognised[recognised_index + 1],
+                    )):
+                best = max(best, 1 + scores[expected_index + 1][recognised_index + 2])
+            scores[expected_index][recognised_index] = best
+    return scores[0][0] / row_count
+
+
 def evaluate_asr_match(expected_text: str, transcript: str, target_language: str = '') -> dict[str, object]:
     """Return a conservative, language-neutral acceptance decision.
 
@@ -275,19 +335,19 @@ def evaluate_asr_match(expected_text: str, transcript: str, target_language: str
     expected = subtitle_words(expected_text, target_language)
     recognised = subtitle_words(transcript, target_language)
     distance = word_error_rate(expected, recognised)
-    shared = sum(min(expected.count(token), recognised.count(token)) for token in set(expected))
-    coverage = shared / len(expected) if expected else 1.0
+    exact_shared = sum(min(expected.count(token), recognised.count(token)) for token in set(expected))
+    exact_coverage = exact_shared / len(expected) if expected else 1.0
+    coverage = fuzzy_expected_coverage(expected, recognised)
     expected_compact = ''.join(expected)
     recognised_compact = ''.join(recognised)
     character_similarity = SequenceMatcher(None, expected_compact, recognised_compact).ratio() if expected_compact or recognised_compact else 1.0
-    # A checkpoint is intended to catch a skipped or substantially wrong
-    # sentence.  Whisper may harmlessly join a compound word or vary one
-    # inflection, so accept up to a small, clearly bounded variation.
-    strict = bool(recognised) and distance <= 0.35 and coverage >= 0.70
+    # Every target language uses the same completeness floor.  A missing
+    # word at the end of a short line must not be accepted as a valid voice.
+    strict = bool(recognised) and distance <= 0.35 and coverage >= 0.88
     # This fallback is deliberately narrow: it only accepts a nearly
     # identical utterance with a minor elision/spacing variation.  It cannot
     # accept a different sentence merely because it shares a few words.
-    relaxed = bool(recognised) and character_similarity >= 0.93 and coverage >= 0.60
+    relaxed = bool(recognised) and character_similarity >= 0.93 and coverage >= 0.88
     satisfactory = strict or relaxed
     return {
         'satisfactory': satisfactory,
@@ -296,6 +356,7 @@ def evaluate_asr_match(expected_text: str, transcript: str, target_language: str
         'recognised_word_count': len(recognised),
         'word_error_rate': round(distance, 4),
         'expected_word_coverage': round(coverage, 4),
+        'exact_word_coverage': round(exact_coverage, 4),
         'character_similarity': round(character_similarity, 4),
         'comparison_language': target_language.lower(),
     }
@@ -436,7 +497,7 @@ def setup_database(connection: sqlite3.Connection) -> None:
         reference_channels INTEGER, reference_rms_dbfs REAL, reference_peak_dbfs REAL,
         output_rms_dbfs REAL, output_peak_dbfs REAL, normalization_gain_db REAL,
         reference_duration_ms INTEGER, output_duration_ms INTEGER, error TEXT, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
-        generation_engine TEXT, voxcpm_steps INTEGER, generation_seed INTEGER, output_opus_path TEXT,
+        generation_engine TEXT, voxcpm_steps INTEGER, generation_seed INTEGER, generation_id TEXT, output_opus_path TEXT,
         opus_bitrate_kbps INTEGER, opus_duration_ms INTEGER,
         output_wem_path TEXT, wwise_conversion TEXT, wem_bitrate_kbps INTEGER,
         wem_duration_ms INTEGER,
@@ -448,6 +509,8 @@ def setup_database(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE production_voice_outputs ADD COLUMN voxcpm_steps INTEGER")
     if "generation_seed" not in columns:
         connection.execute("ALTER TABLE production_voice_outputs ADD COLUMN generation_seed INTEGER")
+    if "generation_id" not in columns:
+        connection.execute("ALTER TABLE production_voice_outputs ADD COLUMN generation_id TEXT")
     if "output_opus_path" not in columns:
         connection.execute("ALTER TABLE production_voice_outputs ADD COLUMN output_opus_path TEXT")
     if "opus_bitrate_kbps" not in columns:
@@ -474,17 +537,17 @@ def record_database(connection: sqlite3.Connection, run_id: str, row: dict) -> N
          reference_sample_rate, reference_channels, reference_rms_dbfs,
          reference_peak_dbfs, output_rms_dbfs, output_peak_dbfs,
          normalization_gain_db, reference_duration_ms, output_duration_ms, error, started_at,
-         finished_at, generation_engine, voxcpm_steps, generation_seed, output_opus_path,
+         finished_at, generation_engine, voxcpm_steps, generation_seed, generation_id, output_opus_path,
          opus_bitrate_kbps, opus_duration_ms, output_wem_path, wwise_conversion,
          wem_bitrate_kbps, wem_duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
         run_id, row.get("source_audio_path"), row.get("target_language"), row.get("dialogue_id"),
         row.get("voice_id"), row.get("official_subtitle", ""), row.get("synthesis_text", ""),
         row.get("output_wav_path", ""), row.get("status"), row.get("reference_sample_rate"),
         row.get("reference_channels"), row.get("reference_rms_dbfs"), row.get("reference_peak_dbfs"),
         row.get("output_rms_dbfs"), row.get("output_peak_dbfs"), row.get("normalization_gain_db"),
         row.get("reference_duration_ms"), row.get("duration_ms"), row.get("error"), row.get("started_at"), row.get("finished_at"),
-        row.get("generation_engine"), row.get("voxcpm_steps"), row.get("generation_seed"), row.get("output_opus_path"),
+        row.get("generation_engine"), row.get("voxcpm_steps"), row.get("generation_seed"), row.get("generation_id"), row.get("output_opus_path"),
         row.get("opus_bitrate_kbps"), row.get("opus_duration_ms"),
         row.get("output_wem_path"), row.get("wwise_conversion"),
         row.get("wem_bitrate_kbps"), row.get("wem_duration_ms"),
@@ -810,9 +873,10 @@ def generate_duration_controlled(engine: str, model, text: str, reference: Path,
         if engine != 'xtts_v2':
             break
         next_speed = next_xtts_duration_speed(speed, reference_duration_ms, output_duration_ms)
-        if next_speed <= speed:
-            break
-        speed = next_speed
+        # At the maximum tested speed, keep the remaining deterministic seed
+        # attempts instead of aborting early at 2/4. A different seed can
+        # still produce a timing-compatible utterance.
+        speed = max(speed, next_speed)
     assert latest is not None
     raise TargetDurationOutlier(
         f"Target duration {latest['output_duration_ms']} ms exceeds {latest['maximum_duration_ms']} ms "
@@ -1041,12 +1105,13 @@ def main() -> int:
 
     completed_sources: set[str] = set()
     deferred_sources: set[str] = set()
+    final_review_sources: set[str] = set()
     completed_result_rows: list[dict] = []
+    latest_result_by_source: dict[str, dict] = {}
     if args.resume and results_path.is_file():
         # ``results.jsonl`` is append-only.  A later migration can correctly
         # defer a previously generated WEM, so resume must honour the newest
         # state for each source rather than retaining an earlier WEM record.
-        latest_result_by_source: dict[str, dict] = {}
         with results_path.open("r", encoding="utf-8") as previous_results:
             for line in previous_results:
                 try:
@@ -1065,12 +1130,16 @@ def main() -> int:
                 completed_sources.add(source_path)
                 if previous.get("status") == "wem_generated":
                     completed_result_rows.append(previous)
-            elif previous.get("status") == "deferred_short_reference":
-                # The dedicated later-stage queue owns this source.  Do not
-                # repeatedly extract it on every resume while the current
-                # XTTS-only phase is intentionally active.
+            elif previous.get("status") == "deferred" or str(previous.get("status", "")).startswith("deferred_"):
+                # Deferred sources are owned by a later dedicated phase. Do
+                # not extract, synthesize, or ASR-check them during XTTS.
                 deferred_sources.add(source_path)
-        print(f"RESUME completed={len(completed_sources)} deferred_short_reference={len(deferred_sources)} total={total} language={args.language} engine={args.engine}", flush=True)
+            elif previous.get("status") == "not_validated":
+                # All automatic duration/ASR attempts are already exhausted.
+                # Keep the WEM for the review table, but never restart it on
+                # a normal resume.
+                final_review_sources.add(source_path)
+        print(f"RESUME completed={len(completed_sources)} deferred={len(deferred_sources)} not_validated={len(final_review_sources)} total={total} language={args.language} engine={args.engine}", flush=True)
     completed_max_number = max((int(row.get("number", 0)) for row in completed_result_rows), default=0)
     connection = sqlite3.connect(args.database)
     setup_database(connection)
@@ -1112,6 +1181,12 @@ def main() -> int:
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
         for source_path, check in latest_asr_check_by_source.items():
+            # An ASR result belongs only to the exact WEM generation it
+            # checked.  A later regeneration must always return to Awaiting
+            # ASR with a fresh attempt counter.
+            current_generation_id = str(latest_result_by_source.get(source_path, {}).get("generation_id", ""))
+            if not current_generation_id or str(check.get("generation_id", "")) != current_generation_id:
+                continue
             if bool(check.get("satisfactory")):
                 asr_checked_sources.add(source_path)
             elif len(check.get("attempts", [])) >= args.asr_max_attempts:
@@ -1151,14 +1226,36 @@ def main() -> int:
             deferred_exception_rows: list[dict] = []
             voxcpm_fallback_rows: dict[str, dict] = {}
 
+            def defer_nonverbal_row(candidate: dict) -> None:
+                """Persist one asterisk subtitle only when manifest reaches it."""
+                source_path = str(candidate["source_audio_path"])
+                relative = Path(*source_path.replace("\\", "/").split("/"))
+                timestamp = datetime.now(timezone.utc).isoformat()
+                deferred_result = {
+                    **candidate,
+                    "generation_engine": args.engine,
+                    "output_wem_path": str(wem_root / relative),
+                    "status": "deferred",
+                    "deferred_reason": "asterisk_subtitle_requires_later_nonverbal_handling",
+                    "started_at": timestamp,
+                    "finished_at": timestamp,
+                }
+                write_json_line(results, deferred_result)
+                record_database(connection, run_id, deferred_result)
+                deferred_sources.add(source_path)
+                deferred_exception_rows.append(candidate)
+                print(f"DEFERRED nonverbal subtitle {candidate.get('number', 0)}/{total}", flush=True)
+
             def pending_rows():
                 for line in selection:
                     row = json.loads(line)
-                    if str(row["source_audio_path"]) not in completed_sources and str(row["source_audio_path"]) not in deferred_sources:
+                    if (str(row["source_audio_path"]) not in completed_sources
+                            and str(row["source_audio_path"]) not in deferred_sources
+                            and str(row["source_audio_path"]) not in final_review_sources):
                         if is_nonverbal_subtitle(str(row.get("official_subtitle", ""))):
-                            # Asterisk subtitles are exceptions, not proof of
-                            # silence.  Do not retain or synthesize them yet.
-                            deferred_exception_rows.append(row)
+                            # Never extract or synthesize directions/ambience.
+                            # This happens lazily at the current manifest row.
+                            defer_nonverbal_row(row)
                         else:
                             yield row
 
@@ -1199,7 +1296,7 @@ def main() -> int:
                 item["temp_wav"].unlink(missing_ok=True)
                 item["target_wav"].unlink(missing_ok=True)
                 source_row = item["row"]
-                print(f"PROGRESS {item['number']}/{total} generated={generated} failed={failed} dialogue={source_row.get('dialogue_id', '')} target_text={json.dumps(source_row.get('official_subtitle', ''), ensure_ascii=False)}", flush=True)
+                print(f"PROGRESS {item['number']}/{total} generated={generated} issues={failed} dialogue={source_row.get('dialogue_id', '')} target_text={json.dumps(source_row.get('official_subtitle', ''), ensure_ascii=False)}", flush=True)
 
             def release_generation_model() -> None:
                 """Free the TTS CUDA allocation before a checkpoint ASR load."""
@@ -1218,6 +1315,29 @@ def main() -> int:
                 if model is None:
                     print(f"MODEL reload {args.engine} on CUDA after ASR checkpoint", flush=True)
                     model = load_engine(args.engine, args.model)
+
+            def mark_wem_generation(result: dict) -> None:
+                """Give each finalized WEM a new identity for ASR binding."""
+                result["status"] = "wem_generated"
+                result["generation_id"] = uuid.uuid4().hex
+
+            def mark_duration_inconsistent(item: dict, error: TargetDurationOutlier) -> None:
+                """Keep one duration outlier out of the ASR retry loop."""
+                source_path = str(item['row']['source_audio_path'])
+                item['duration_failed'] = True
+                item['result'].update({
+                    'status': 'not_validated', 'error': str(error),
+                    'error_traceback': traceback.format_exc(),
+                })
+                final_review_sources.add(source_path)
+                print(f"INCONSISTENT {item['number']}/{total} duration limit: {error}", flush=True)
+
+            def persist_regenerated_wem(item: dict) -> None:
+                """Checkpoint a retry WEM before its ASR pass can be interrupted."""
+                result = item['result']
+                result['finished_at'] = datetime.now(timezone.utc).isoformat()
+                write_json_line(results, result)
+                record_database(connection, run_id, result)
 
             def run_asr_attempt(item: dict, attempt: int) -> dict:
                 """ASR the exact normalised WAV used to create this item's WEM."""
@@ -1279,8 +1399,10 @@ def main() -> int:
                         args.wwise_console, args.wwise_project, args.decoder, item['number'], total,
                     )
                     item['result'].update(retry_metrics)
+                    mark_wem_generation(item['result'])
                     item['result']['duration_validation'] = duration_validation
                     item['result']['generation_seed'] = retry_seed
+                    persist_regenerated_wem(item)
                     validation = run_asr_attempt(item, attempt)
                     attempts.append(validation)
                 ensure_generation_model()
@@ -1288,6 +1410,7 @@ def main() -> int:
                 entry = {
                     'checkpoint': checkpoint, 'completed_number': item['number'],
                     'source_audio_path': item['row']['source_audio_path'], 'target_language': args.language,
+                    'generation_id': item['result'].get('generation_id'),
                     'attempts': attempts, 'satisfactory': bool(validation.get('satisfactory')),
                     'validated_at': datetime.now(timezone.utc).isoformat(),
                 }
@@ -1338,6 +1461,7 @@ def main() -> int:
                 if resume_histories and first_attempt <= args.asr_max_attempts:
                     ensure_generation_model()
                     print(f"ASR GROUP {group_number} resuming {len(unresolved)} failed item(s) with {args.engine} before new ASR checks", flush=True)
+                    regenerated_items: list[dict] = []
                     for item in unresolved:
                         if pause_request_path.is_file():
                             print('PAUSE requested before resumed ASR retry generation', flush=True)
@@ -1351,18 +1475,26 @@ def main() -> int:
                         extract_and_decode_english_wav(args.reader, args.decoder, Path(row_data['original_archive_path']), internal_path, item['temp_wem'], item['temp_wav'], item['number'], total, False)
                         print(f"ITEM {item['number']}/{total} stage=generate_target english_subtitle={json.dumps(str(row_data.get('english_subtitle', '')), ensure_ascii=False)} target_subtitle={json.dumps(str(row_data.get('official_subtitle', '')), ensure_ascii=False)}", flush=True)
                         seed = stable_seed(internal_path) + max(1, first_attempt - 1)
-                        audio, rate, duration_validation = generate_duration_controlled(args.engine, model, str(row_data['synthesis_text']), item['temp_wav'], temp_root, args.language, args.voxcpm_steps, seed, item['number'], total)
+                        try:
+                            audio, rate, duration_validation = generate_duration_controlled(args.engine, model, str(row_data['synthesis_text']), item['temp_wav'], temp_root, args.language, args.voxcpm_steps, seed, item['number'], total)
+                        except TargetDurationOutlier as error:
+                            mark_duration_inconsistent(item, error)
+                            continue
                         preview_active = args.preview_wav_playback and not (preview_root / '_preview_disabled').is_file()
                         if preview_active:
                             preview_sequence += 1
                         item['result'].update(normalize_and_encode_generated_wem(audio, rate, item['temp_wav'], item['target_wav'], item['output_wem'], args.wwise_console, args.wwise_project, args.decoder, item['number'], total, preview_root if preview_active else None, preview_sequence if preview_active else None))
+                        mark_wem_generation(item['result'])
                         item['result']['duration_validation'] = duration_validation
                         preview_path = item['result'].get('target_preview_wav_path')
                         if preview_active and preview_path:
                             print(f"OUTPUT {item['number']}/{total} stage=preview_target_wait", flush=True)
                             item['result']['target_preview_completed'] = wait_for_background_wav_preview(Path(preview_path), preview_root)
                         item['result']['generation_seed'] = seed
+                        persist_regenerated_wem(item)
                         item['temp_wem'].unlink(missing_ok=True); item['temp_wav'].unlink(missing_ok=True); item['target_wav'].unlink(missing_ok=True)
+                        regenerated_items.append(item)
+                    unresolved = regenerated_items
                 for attempt in range(first_attempt, args.asr_max_attempts + 1):
                     # One Whisper load for the complete unresolved set.
                     release_generation_model()
@@ -1400,6 +1532,7 @@ def main() -> int:
                                     'group': group_number,
                                     'source_audio_path': source_path,
                                     'target_language': args.language,
+                                    'generation_id': item['result'].get('generation_id'),
                                     'attempts': list(attempts[source_path]),
                                     'satisfactory': True,
                                     'validated_at': datetime.now(timezone.utc).isoformat(),
@@ -1434,6 +1567,7 @@ def main() -> int:
                     # One XTTS load for every failed line in this group.
                     ensure_generation_model()
                     print(f"ASR GROUP {group_number} regenerating {len(unresolved)} failed item(s) with {args.engine}", flush=True)
+                    regenerated_items = []
                     for item in unresolved:
                         if pause_request_path.is_file():
                             print('PAUSE requested before ASR retry generation', flush=True)
@@ -1447,18 +1581,26 @@ def main() -> int:
                         extract_and_decode_english_wav(args.reader, args.decoder, Path(row_data['original_archive_path']), internal_path, item['temp_wem'], item['temp_wav'], item['number'], total, False)
                         print(f"ITEM {item['number']}/{total} stage=generate_target english_subtitle={json.dumps(str(row_data.get('english_subtitle', '')), ensure_ascii=False)} target_subtitle={json.dumps(str(row_data.get('official_subtitle', '')), ensure_ascii=False)}", flush=True)
                         seed = stable_seed(internal_path) + attempt
-                        audio, rate, duration_validation = generate_duration_controlled(args.engine, model, str(row_data['synthesis_text']), item['temp_wav'], temp_root, args.language, args.voxcpm_steps, seed, item['number'], total)
+                        try:
+                            audio, rate, duration_validation = generate_duration_controlled(args.engine, model, str(row_data['synthesis_text']), item['temp_wav'], temp_root, args.language, args.voxcpm_steps, seed, item['number'], total)
+                        except TargetDurationOutlier as error:
+                            mark_duration_inconsistent(item, error)
+                            continue
                         preview_active = args.preview_wav_playback and not (preview_root / '_preview_disabled').is_file()
                         if preview_active:
                             preview_sequence += 1
                         item['result'].update(normalize_and_encode_generated_wem(audio, rate, item['temp_wav'], item['target_wav'], item['output_wem'], args.wwise_console, args.wwise_project, args.decoder, item['number'], total, preview_root if preview_active else None, preview_sequence if preview_active else None))
+                        mark_wem_generation(item['result'])
                         item['result']['duration_validation'] = duration_validation
                         preview_path = item['result'].get('target_preview_wav_path')
                         if preview_active and preview_path:
                             print(f"OUTPUT {item['number']}/{total} stage=preview_target_wait", flush=True)
                             item['result']['target_preview_completed'] = wait_for_background_wav_preview(Path(preview_path), preview_root)
                         item['result']['generation_seed'] = seed
+                        persist_regenerated_wem(item)
                         item['temp_wem'].unlink(missing_ok=True); item['temp_wav'].unlink(missing_ok=True); item['target_wav'].unlink(missing_ok=True)
+                        regenerated_items.append(item)
+                    unresolved = regenerated_items
                 asr_checked += len(candidates)
                 for item in candidates:
                     source_path = str(item['row']['source_audio_path'])
@@ -1466,7 +1608,7 @@ def main() -> int:
                     final = history[-1]
                     entry = persisted_successes.get(source_path)
                     if entry is None:
-                        entry = {'group': group_number, 'source_audio_path': item['row']['source_audio_path'], 'target_language': args.language, 'attempts': history, 'satisfactory': bool(final.get('satisfactory')), 'validated_at': datetime.now(timezone.utc).isoformat()}
+                        entry = {'group': group_number, 'source_audio_path': item['row']['source_audio_path'], 'target_language': args.language, 'generation_id': item['result'].get('generation_id'), 'attempts': history, 'satisfactory': bool(final.get('satisfactory')), 'validated_at': datetime.now(timezone.utc).isoformat()}
                         with asr_checks_path.open('a', encoding='utf-8', newline='\n') as check_file:
                             write_json_line(check_file, entry)
                         if entry['satisfactory']:
@@ -1476,6 +1618,11 @@ def main() -> int:
                         asr_retry_recovered += 1
                     if not final.get('satisfactory'):
                         asr_unresolved += 1
+                        # All configured ASR attempts were used. Preserve the
+                        # WEM for manual review, but do not put it back into
+                        # the automatic resume queue.
+                        item['result']['status'] = 'not_validated'
+                        final_review_sources.add(source_path)
                         voxcpm_fallback_rows[str(item['row']['source_audio_path'])] = item['row']
                         with asr_errors_path.open('a', encoding='utf-8', newline='\n') as error_file:
                             write_json_line(error_file, {**entry, 'status': 'unresolved_after_max_attempts'})
@@ -1509,14 +1656,23 @@ def main() -> int:
                         item["result"]["target_preview_completed"] = wait_for_background_wav_preview(Path(preview_path), preview_root)
                         if item["result"]["target_preview_completed"]:
                             print(f"OUTPUT {item['number']}/{total} stage=preview_target_complete", flush=True)
-                    item["result"].update({"status": "wem_generated"})
+                    mark_wem_generation(item["result"])
                     generated += 1
                     item_group = max(1, ((int(item['number']) - 1) // args.asr_checkpoint_interval) + 1)
                     asr_pending_groups.setdefault(item_group, []).append(item)
-                except Exception as error:
-                    item["result"].update({"status": "failed", "error": str(error), "error_traceback": traceback.format_exc()})
+                except TargetDurationOutlier as error:
+                    # All duration attempts were used. This is final for the
+                    # automatic batch and remains visible as Not validated.
+                    item["result"].update({"status": "not_validated", "error": str(error), "error_traceback": traceback.format_exc()})
                     failed += 1
-                    print(f"ERROR {item['number']}/{total} {type(error).__name__}: {error}", flush=True)
+                    final_review_sources.add(str(item['row']['source_audio_path']))
+                    print(f"NOT VALIDATED {item['number']}/{total} {type(error).__name__}: {error}", flush=True)
+                except Exception as error:
+                    # A technical extraction/encoding error is retryable on
+                    # resume and has one visible report state: WEM unavailable.
+                    item["result"].update({"status": "wem_unavailable", "error": str(error), "error_traceback": traceback.format_exc()})
+                    failed += 1
+                    print(f"WEM UNAVAILABLE {item['number']}/{total} {type(error).__name__}: {error}", flush=True)
                 persist_result(item)
                 return True
 
@@ -1610,7 +1766,7 @@ def main() -> int:
                         result["reference_duration_ms"] = english_duration_ms
                         if args.engine == "xtts_v2" and english_duration_ms < XTTS_MIN_REFERENCE_DURATION_MS:
                             result.update({
-                                "status": "deferred_short_reference",
+                                "status": "deferred",
                                 "deferred_reason": "xtts_reference_below_minimum_duration",
                                 "xtts_minimum_reference_duration_ms": XTTS_MIN_REFERENCE_DURATION_MS,
                             })
@@ -1674,10 +1830,15 @@ def main() -> int:
                         )
                         pending_outputs.append(output_item)
                         output_queued = True
-                    except Exception as error:
-                        result.update({"status": "failed", "error": str(error), "error_traceback": traceback.format_exc()})
+                    except TargetDurationOutlier as error:
+                        result.update({"status": "not_validated", "error": str(error), "error_traceback": traceback.format_exc()})
                         failed += 1
-                        print(f"ERROR {number}/{total} {type(error).__name__}: {error}", flush=True)
+                        final_review_sources.add(internal_path)
+                        print(f"NOT VALIDATED {number}/{total} {type(error).__name__}: {error}", flush=True)
+                    except Exception as error:
+                        result.update({"status": "wem_unavailable", "error": str(error), "error_traceback": traceback.format_exc()})
+                        failed += 1
+                        print(f"WEM UNAVAILABLE {number}/{total} {type(error).__name__}: {error}", flush=True)
                     if not output_queued:
                         persist_result({
                             "row": row, "number": number, "result": result,
@@ -1720,10 +1881,10 @@ def main() -> int:
                         flush=True,
                     )
                 if pause_requested:
-                    print(f"PAUSED generated={generated} failed={failed}", flush=True)
+                    print(f"PAUSED generated={generated} issues={failed}", flush=True)
     except PauseRequested:
         pause_requested = True
-        print(f"PAUSED generated={generated} failed={failed} during_asr=True", flush=True)
+        print(f"PAUSED generated={generated} issues={failed} during_asr=True", flush=True)
     finally:
         if args.preview_wav_playback:
             stop_background_wav_player(preview_root)
@@ -1745,14 +1906,14 @@ def main() -> int:
                 row = json.loads(line); latest[str(row.get('source_audio_path', ''))] = row
             except json.JSONDecodeError: pass
         for row in latest.values(): final_counts[str(row.get('status', 'unknown'))] = final_counts.get(str(row.get('status', 'unknown')), 0) + 1
-    report = {'run_id': run_id, 'target_language': args.language, 'total': total, 'generated': generated, 'failed': failed, 'status_counts': final_counts, 'asr_checked': asr_checked, 'asr_retry_recovered': asr_retry_recovered, 'asr_unresolved': asr_unresolved, 'asr_error_register': str(asr_errors_path), 'results': str(results_path)}
+    report = {'run_id': run_id, 'target_language': args.language, 'total': total, 'generated': generated, 'issues': failed, 'status_counts': final_counts, 'asr_checked': asr_checked, 'asr_retry_recovered': asr_retry_recovered, 'asr_unresolved': asr_unresolved, 'asr_error_register': str(asr_errors_path), 'results': str(results_path)}
     final_report_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-    final_report_txt.write_text('\n'.join(['GameDubber final report', f'Run: {run_id}', f'Language: {args.language}', f'Total: {total}', f'Generated: {generated}', f'Failed: {failed}', *[f'{key}: {value}' for key,value in sorted(final_counts.items())], f'ASR error register: {asr_errors_path}']), encoding='utf-8')
-    summary = {"engine": args.engine, "run_id": run_id, "started_at": started.isoformat(), "finished_at": datetime.now(timezone.utc).isoformat(), "target_language": args.language, "total": total, "generated": generated, "failed": failed, "paused": pause_requested, "resumed": args.resume, "wem_root": str(wem_root), "wem_format": "Wwise Custom Vorbis", "wwise_conversion": "Vorbis Quality Medium", "wwise_project": str(args.wwise_project), "background_wav_preview": args.preview_wav_playback, "results": str(results_path), "final_report_json": str(final_report_json), "final_report_txt": str(final_report_txt), "status_counts": final_counts, "asr_error_register": str(asr_errors_path)}
+    final_report_txt.write_text('\n'.join(['GameDubber final report', f'Run: {run_id}', f'Language: {args.language}', f'Total: {total}', f'Generated: {generated}', f'Issues: {failed}', *[f'{key}: {value}' for key,value in sorted(final_counts.items())], f'ASR error register: {asr_errors_path}']), encoding='utf-8')
+    summary = {"engine": args.engine, "run_id": run_id, "started_at": started.isoformat(), "finished_at": datetime.now(timezone.utc).isoformat(), "target_language": args.language, "total": total, "generated": generated, "issues": failed, "paused": pause_requested, "resumed": args.resume, "wem_root": str(wem_root), "wem_format": "Wwise Custom Vorbis", "wwise_conversion": "Vorbis Quality Medium", "wwise_project": str(args.wwise_project), "background_wav_preview": args.preview_wav_playback, "results": str(results_path), "final_report_json": str(final_report_json), "final_report_txt": str(final_report_txt), "status_counts": final_counts, "asr_error_register": str(asr_errors_path)}
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     shutil.rmtree(temp_root, ignore_errors=True)
     shutil.rmtree(target_temp_root, ignore_errors=True)
-    print(f"DONE generated={generated} failed={failed} paused={pause_requested} original_retained={retained_original} asr_checked={asr_checked} asr_recovered={asr_retry_recovered} asr_unresolved={asr_unresolved}", flush=True)
+    print(f"DONE generated={generated} issues={failed} paused={pause_requested} original_retained={retained_original} asr_checked={asr_checked} asr_recovered={asr_retry_recovered} asr_unresolved={asr_unresolved}", flush=True)
     print(f"FINAL REPORT {final_report_txt} | {json.dumps(final_counts, ensure_ascii=False)}", flush=True)
     if asr_unresolved:
         print(f"ASR ERROR REGISTER {asr_errors_path}", flush=True)

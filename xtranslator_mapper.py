@@ -1066,8 +1066,11 @@ def _start_full_voiceover_batch_with_adapter(self, resume_run: Path | None = Non
     voxcpm_steps = int(getattr(self, '_selected_voxcpm_steps', 6)) if engine == 'voxcpm2' else None
     if voxcpm_steps is not None and not 1 <= voxcpm_steps <= 20:
         voxcpm_steps = 6
+    # Keep the live production status readable.  Detailed XTTS parameters
+    # remain configured internally and do not need to occupy every progress
+    # update.
     display_engine_name = (f'{engine_name} — diffusion {voxcpm_steps} steps'
-                           if voxcpm_steps is not None else engine_name)
+                           if voxcpm_steps is not None else engine_name.split(' — ', 1)[0])
     target_code = language.rsplit('(', 1)[1].rstrip(')').lower()
     if not _engine_supports_target_language(engine, target_code):
         messagebox.showerror('Unsupported target language', f'{engine_name} does not support the selected target language: {language}.', parent=self)
@@ -1134,12 +1137,14 @@ def _start_full_voiceover_batch_with_adapter(self, resume_run: Path | None = Non
     self._full_batch_context = {'language': language, 'engine': engine, 'engine_name': display_engine_name, 'unique_count': unique_count, 'run_dir': run_dir, 'batch_log': batch_log, 'latest_number': resumed_count, 'completed_wems': resumed_count, 'latest_attempt_number': resumed_count, 'started_monotonic': session_started_monotonic, 'eta_anchor_completed': resumed_count, 'eta_anchor_monotonic': session_started_monotonic, 'eta_text': 'calculating...', 'resuming': resuming, 'voxcpm_steps': voxcpm_steps, 'preview_wavs': preview_wavs, 'preview_player_started': False, 'game_path': self.game_path.get().strip(), 'asr_checked': 0, 'asr_total': resumed_count if resuming else 500}
     _write_production_run_state(run_dir, language, engine, display_engine_name, unique_count, 'active', voxcpm_steps, self.game_path.get().strip())
     self.overall.configure(maximum=11, value=10)
-    self.overall_status.set(f'Overall: Step 11 of 11 — Generate {language} Wwise Vorbis WEMs with {engine_name}')
+    self.overall_status.set(f'Overall: Step 11 of 11 — Generate {language} Wwise Vorbis WEMs with {display_engine_name}')
     self.step.configure(maximum=max(1, unique_count), value=0)
     self.step_status.set('Current task: Resuming production — waiting for the next manifest item...')
     self.eta_status.set('ETA calculating...')
     self.current_line.set('Current dialogue: —')
     self.action_button.configure(state='disabled')
+    if hasattr(self, 'batch_pause_button'):
+        self.batch_pause_button.configure(text='Pause', state='normal')
     if hasattr(self, 'reset_button'):
         self.reset_button.configure(state='disabled')
     self._append_log(f'> Starting non-blocking full batch with {display_engine_name} | Run: {run_dir}')
@@ -1173,6 +1178,27 @@ def _start_full_voiceover_batch_with_adapter(self, resume_run: Path | None = Non
     # Apply the visible initial checkbox state too; waiting for the child-side
     # ready marker makes a checked box reliable without requiring a toggle.
     self.after(100, self._on_preview_wav_playback_changed)
+
+
+def _toggle_inline_batch_pause(self) -> None:
+    """Pause safely, then resume the same production run without closing GUI."""
+    context = getattr(self, '_full_batch_context', None)
+    if getattr(self, '_full_batch_running', False) and context:
+        run_dir = Path(context['run_dir'])
+        request_path = run_dir / '_pause_requested'
+        request_path.touch()
+        _write_production_resume_state(context, 'pause_requested')
+        self._inline_pause_requested = True
+        self.batch_pause_button.configure(text='Pausing...', state='disabled')
+        self.step_status.set('Current task: Pausing safely after the active WEM/ASR operation...')
+        self._append_log('> Pause requested from the GUI; finishing the active safe boundary.')
+        return
+    run_dir = getattr(self, '_inline_paused_run', None)
+    if isinstance(run_dir, Path) and run_dir.is_dir():
+        self._inline_paused_run = None
+        self.batch_pause_button.configure(text='Resuming...', state='disabled')
+        self._append_log(f'> Resuming the paused production run in this window: {run_dir}')
+        self._start_full_voiceover_batch(run_dir)
 
 
 def _poll_full_voiceover_batch_with_adapter(self) -> None:
@@ -1228,7 +1254,10 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             retry_total = max(1, int(context.get('asr_regeneration_total', 1)))
                             retry_group = int(context.get('asr_regeneration_group', 0) or 0)
                             retry_position = min(len(regenerated), retry_total)
-                            label = f'Regenerating WEM with {context["engine_name"]}'
+                            asr_attempt = int(context.get('asr_validation_attempt', 1) or 1)
+                            asr_max_attempts = int(context.get('asr_validation_max_attempts', 4) or 4)
+                            label = (f'Regenerating WEM with {context["engine_name"]} '
+                                     f'— ASR attempt {asr_attempt}/{asr_max_attempts}')
                             context['latest_stage_label'] = label
                             self.step.configure(maximum=retry_total, value=retry_position)
                             self.step_status.set(
@@ -1355,11 +1384,14 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_regeneration_group'] = group_number
                             context['asr_regeneration_total'] = max(1, retry_total)
                             context['asr_regenerated_sources'] = set()
+                            asr_attempt = int(context.get('asr_validation_attempt', 1) or 1)
+                            asr_max_attempts = int(context.get('asr_validation_max_attempts', 4) or 4)
                             self.step.configure(maximum=max(1, retry_total), value=0)
-                            self.eta_status.set('')
+                            # Keep the last overall ETA visible while this
+                            # ASR retry group runs.
                             self.step_status.set(
                                 f'Current task: Regenerating WEM with {context["engine_name"]} '
-                                f'— 0 / {retry_total:,}'
+                                f'— ASR attempt {asr_attempt}/{asr_max_attempts} | 0 / {retry_total:,}'
                             )
                         self._append_log('> ' + clean)
                         continue
@@ -1375,7 +1407,8 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_validation_max_attempts'] = 4
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=group_size, value=0)
-                            self.eta_status.set('')
+                            # ASR has no stable per-line estimate yet; retain
+                            # the startup/calculated overall ETA instead.
                             self.step_status.set(
                                 f'Current task: ASR validation — attempt 1/4 | 0 / {group_size:,}'
                             )
@@ -1396,7 +1429,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['asr_validation_max_attempts'] = max_attempts
                             context['asr_regeneration_active'] = False
                             self.step.configure(maximum=max(1, group_size), value=0)
-                            self.eta_status.set('')
+                            # Do not blank the ETA between ASR attempts.
                             self.step_status.set(
                                 f'Current task: ASR validation — attempt {attempt}/{max_attempts} '
                                 f'| 0 / {group_size:,}'
@@ -1428,8 +1461,12 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             if target_subtitle:
                                 line += f' | {target_subtitle}'
                             if tag == 'asr_fail':
-                                line += ' — WILL BE REGENERATED'
-                            self._append_log(line, tag)
+                                self._append_log_fragments([
+                                    (line, tag),
+                                    (' — Regeneration queued', None),
+                                ])
+                            else:
+                                self._append_log(line, tag)
                             self._track_review_number(asr_number)
                         except (IndexError, ValueError):
                             asr_number, asr_total = 0, int(context.get('unique_count', 0))
@@ -1463,7 +1500,8 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                     # a later secondary-model stage rather than spending a
                     # CUDA generation attempt on an unstable short reference.
                     self._append_log('> ' + clean)
-                    self.eta_status.set('')
+                    # A deferred source does not invalidate the remaining
+                    # production ETA.
                     self.step_status.set('Current task: Deferring a short English reference before XTTS generation')
                 elif clean.startswith(('START ', 'MODEL ', 'DONE ', 'RESUME ', 'PAUSE ', 'PAUSED ', 'ERROR ', 'FINAL REPORT ')):
                     self._append_log('> ' + clean.split(' target_text=', 1)[0])
@@ -1488,11 +1526,14 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
         # available for the next launch.
         self.overall.configure(maximum=11, value=10)
         self.overall_status.set('Overall: Full voice-over batch paused safely')
-        self.step_status.set('Current task: Restart GameDubber to resume from the first unverified ASR line')
+        self.step_status.set('Current task: Batch paused safely — click Resume to continue')
         self.current_line.set('Current dialogue: Batch paused; generated WEMs and ASR checks were preserved.')
         self._append_log(f"> Full {context['engine_name']} batch paused safely | Run: {context['run_dir']}")
-        messagebox.showinfo('Full batch paused', f"The batch was paused safely.\n\nGenerated files and ASR checkpoints were preserved. Restart GameDubber to resume from the first line that has not passed ASR validation.\n\nDetailed log:\n{context['batch_log']}", parent=self)
-        self.action_button.configure(text='Restart GameDubber to Resume', state='disabled')
+        self._inline_paused_run = Path(context['run_dir'])
+        self._inline_pause_requested = False
+        if hasattr(self, 'batch_pause_button'):
+            self.batch_pause_button.configure(text='Resume', state='normal')
+        self.action_button.configure(text='Batch paused — use Resume', state='disabled')
     elif finished == 0:
         self.overall.configure(maximum=11, value=11)
         self.step.configure(value=context['unique_count'])
@@ -1502,12 +1543,16 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
         self._append_log(f"> Full {context['engine_name']} batch complete | Run: {context['run_dir']}")
         messagebox.showinfo('Primary production phase complete', f"Subtitle-driven voice generation and ASR validation completed with {context['engine_name']}.\n\nNo exception processing, original-English retention, Vox fallback, or BA2 packaging was started.\nDeferred rows, if any, were saved in the run folder for a later phase.\n\nRun folder:\n{context['run_dir']}\n\nDetailed log:\n{context['batch_log']}", parent=self)
         self.action_button.configure(text='Primary Production Phase Complete', state='disabled')
+        if hasattr(self, 'batch_pause_button'):
+            self.batch_pause_button.configure(text='Pause', state='disabled')
     else:
         self.overall.configure(maximum=11, value=10)
         self.overall_status.set('Overall: Full voice-over batch ended with errors')
         self.step_status.set('Current task: Inspect detailed batch log and SQLite results')
         self._append_log(f"> Full {context['engine_name']} batch ended | Exit code: {finished} | Log: {context['batch_log']}")
         messagebox.showerror('Full batch ended with errors', f"The batch ended with errors.\n\nDetailed log:\n{context['batch_log']}\n\nCompleted files, if any, remain in its run folder.", parent=self)
+        if hasattr(self, 'batch_pause_button'):
+            self.batch_pause_button.configure(text='Pause', state='disabled')
         completed = _resume_completed_count(Path(context['run_dir']))
         if completed and completed < int(context.get('unique_count', 0)):
             _write_production_resume_state(context, 'paused')
@@ -2192,9 +2237,22 @@ def install(cls):
         # Keep this utility separate from pipeline controls: it occupies only
         # its natural text width at the upper-right edge of the main panel.
         self.phonetic_dictionary_button.place(relx=1.0, x=0, y=0, anchor='ne')
+        self.update_idletasks()
+        self.batch_pause_button = ttk.Button(
+            getattr(self, 'eta_controls', self.log.master),
+            text='Pause', command=self._toggle_inline_batch_pause,
+            width=0, state='disabled',
+        )
+        # ETA and the active pause control stay together immediately above
+        # the terminal, so both remain visible during long production runs.
+        if hasattr(self, 'eta_controls'):
+            self.batch_pause_button.pack(side='left', padx=(8, 0))
+        else:
+            self.batch_pause_button.place(relx=1.0, x=-(self.phonetic_dictionary_button.winfo_reqwidth() + 6), y=0, anchor='ne')
 
     cls._build = build_with_phonetic_dictionary_button
     cls._edit_phonetic_dictionary = _edit_phonetic_dictionary
+    cls._toggle_inline_batch_pause = _toggle_inline_batch_pause
 
 
 # Embedded real-time validation review --------------------------------------
@@ -2237,13 +2295,19 @@ def _review_sync(self, run_dir: Path) -> dict:
         nonlocal changed
         source = str(row.get('source_audio_path', ''))
         if source:
+            previous = cache['rows'].get(source)
+            if previous is not None and previous.get('generation_id') != row.get('generation_id'):
+                # A replacement WEM has no ASR result until the same
+                # generation is checked. Do not retain the old attempt count.
+                cache['asr'].pop(source, None)
             changed = changed or cache['rows'].get(source) != row
             cache['rows'][source] = row
 
     def save_asr(row: dict) -> None:
         nonlocal changed
         source = str(row.get('source_audio_path', ''))
-        if source:
+        current = cache['rows'].get(source)
+        if source and current and row.get('generation_id') == current.get('generation_id'):
             attempts = row.get('attempts') or []
             value = {
                 'validated': bool(row.get('satisfactory')),
@@ -2285,19 +2349,25 @@ def _review_state(cache: dict, source: str, row: dict) -> tuple[str, str, int]:
     # automatic short-reference deferral, provided an actual WEM exists. The
     # report deliberately does not distinguish manual and automatic results.
     if source in cache['manual'] and wem.is_file():
-        return ('validated', 'Validated', 0) if cache['manual'][source] else ('not_validated', 'Not validated', 0)
-    if row.get('status') == 'deferred_short_reference':
+        return ('validated', 'Validated', 0) if cache['manual'][source] else ('not_validated', 'Inconsistent', 0)
+    status = str(row.get('status', ''))
+    # Legacy deferred_* records are accepted for old runs, while all new
+    # records use the single visible pipeline state: Deferred.
+    if status == 'deferred' or status.startswith('deferred_'):
         return 'deferred', 'Deferred', 0
-    available = row.get('status') == 'wem_generated' and wem.is_file()
+    if status == 'not_validated':
+        asr = cache['asr'].get(source)
+        return 'not_validated', 'Inconsistent', int(asr['attempts']) if asr else 0
+    available = status == 'wem_generated' and wem.is_file()
     if not available:
-        return 'available', 'WEM unavailable', 0
+        return 'available', 'Awaiting WEM', 0
     asr = cache['asr'].get(source)
     if asr:
         attempts = int(asr['attempts'])
         if asr['validated']:
             return 'validated', 'Validated', attempts
-        return 'not_validated', ('Not validated' if attempts >= 4 else 'Not yet validated'), attempts
-    return 'not_validated', 'Not yet validated', 0
+        return 'not_validated', ('Inconsistent' if attempts >= 4 else 'Awaiting ASR'), attempts
+    return 'not_validated', 'Awaiting ASR', 0
 
 
 def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
@@ -2333,7 +2403,9 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
         counts[state] += 1
         if state == 'not_validated' and attempts >= 4:
             counts['rejected'] += 1
-        if self.review_only_unvalidated.get() and state != 'not_validated':
+        # The UI filter follows the visible report label. Awaiting ASR means
+        # not checked yet, whereas Inconsistent is the final failed outcome.
+        if self.review_only_unvalidated.get() and label != 'Inconsistent':
             continue
         if search_text:
             searchable = ' '.join((
@@ -2378,9 +2450,9 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
                 str(row.get('official_subtitle', '')), label, f'{min(attempts, 4)}/4' if attempts else '—',
                 f'{float(english_duration) / 1000:.1f} s' if isinstance(english_duration, (int, float)) else '—',
             ),
-            tags=(state,),
+            tags=('awaiting_asr' if label == 'Awaiting ASR' else state,),
         )
-        self._review_tree_rows[item_id] = (source, row, state)
+        self._review_tree_rows[item_id] = (source, row, state, label)
     # A render replaces Treeview entries, which also clears Tk's blue
     # selection.  Keep Track visibly attached to the active line across the
     # periodic report refresh instead of only selecting it on new events.
@@ -2434,7 +2506,7 @@ def _apply_review_search(self) -> None:
 
 def _focus_tracked_review_row(self, number: int) -> bool:
     """Select a visible tracked row and place it at the fifth position."""
-    for item_id, (_source, row, _state) in getattr(self, '_review_tree_rows', {}).items():
+    for item_id, (_source, row, _state, _label) in getattr(self, '_review_tree_rows', {}).items():
         if int(row.get('number', 0)) == number:
             self.review_tree.selection_set(item_id)
             self.review_tree.focus(item_id)
@@ -2508,7 +2580,7 @@ def _review_click(self, event) -> None:
     item_id = tree.identify_row(event.y)
     if not item_id or item_id not in getattr(self, '_review_tree_rows', {}):
         return
-    source, row, state = self._review_tree_rows[item_id]
+    source, row, state, _label = self._review_tree_rows[item_id]
     if state != 'available':
         _play_review_wem(self, Path(str(row.get('output_wem_path', ''))), source)
 
@@ -2519,11 +2591,15 @@ def _review_context_menu(self, event) -> None:
     if not item_id or item_id not in getattr(self, '_review_tree_rows', {}):
         return
     tree.selection_set(item_id)
-    source, row, state = self._review_tree_rows[item_id]
+    source, row, state, label = self._review_tree_rows[item_id]
     busy = bool(getattr(self, '_full_batch_running', False) or getattr(self, '_review_manual_running', False))
+    # These lightweight overrides do not start a model, extract audio, or
+    # touch production WEMs. They remain available while the batch runs, but
+    # only after ASR has reached a final visible decision.
+    manual_override_allowed = label in {'Validated', 'Inconsistent'}
     menu = tk.Menu(self, tearoff=False)
-    menu.add_command(label='●  Validate', foreground='#179b3a', state='disabled' if busy or state == 'available' else 'normal', command=lambda: _set_review_validation(self, source, True))
-    menu.add_command(label='●  Reject', foreground='#d32121', state='disabled' if busy or state == 'available' else 'normal', command=lambda: _set_review_validation(self, source, False))
+    menu.add_command(label='●  Validate', foreground='#179b3a', state='normal' if manual_override_allowed else 'disabled', command=lambda: _set_review_validation(self, source, True, label))
+    menu.add_command(label='●  Inconsistent', foreground='#d32121', state='normal' if manual_override_allowed else 'disabled', command=lambda: _set_review_validation(self, source, False, label))
     menu.add_separator()
     models = tk.Menu(menu, tearoff=False)
     for name, engine, _description in _available_generation_models():
@@ -2567,47 +2643,49 @@ def _review_context_menu(self, event) -> None:
     menu.grab_release()
 
 
-def _set_review_validation(self, source: str, validated: bool) -> None:
-    """Persist an explicit manual validation choice from the context menu."""
+def _set_review_validation(self, source: str, validated: bool, visible_label: str = '') -> None:
+    """Persist a final manual choice without interrupting a production batch."""
     run_dir = _review_run_directory(self)
-    if run_dir is None or getattr(self, '_full_batch_running', False) or getattr(self, '_review_manual_running', False):
+    if run_dir is None or visible_label not in {'Validated', 'Inconsistent'}:
         return
+    pending = getattr(self, '_review_override_pending', set())
+    if source in pending:
+        return
+    self._review_override_pending = pending | {source}
     cache = _review_sync(self, run_dir)
     previous = cache['manual'].get(source)
     from game_dubber_gui import WORK_ROOT
-    try:
-        connection = sqlite3.connect(WORK_ROOT / 'voice_pipeline.db', timeout=0.5)
-        connection.execute('INSERT OR REPLACE INTO production_voice_review_overrides VALUES (?, ?, ?, ?)', (run_dir.name, source, int(validated), datetime.now(timezone.utc).isoformat()))
-        connection.commit(); connection.close()
-        cache['manual'][source] = validated
-        cache['version'] = int(cache.get('version', 0)) + 1
-        self._review_override_history.append((run_dir.name, source, previous, validated))
-        self._review_redo_history = []
-        self.review_undo_button.configure(state='normal'); self.review_redo_button.configure(state='disabled')
-        _refresh_embedded_validation_report(self, schedule=False)
-    except sqlite3.Error as error:
-        self._append_log(f'> Manual validation could not be saved: {error}')
+
+    def worker() -> None:
+        error_text = ''
+        try:
+            connection = sqlite3.connect(WORK_ROOT / 'voice_pipeline.db', timeout=0.2)
+            connection.execute('INSERT OR REPLACE INTO production_voice_review_overrides VALUES (?, ?, ?, ?)', (run_dir.name, source, int(validated), datetime.now(timezone.utc).isoformat()))
+            connection.commit(); connection.close()
+        except sqlite3.Error as error:
+            error_text = str(error)
+
+        def finish() -> None:
+            self._review_override_pending = getattr(self, '_review_override_pending', set()) - {source}
+            if error_text:
+                self._append_log(f'> Manual validation could not be saved: {error_text}')
+                return
+            cache['manual'][source] = validated
+            cache['version'] = int(cache.get('version', 0)) + 1
+            self._review_override_history.append((run_dir.name, source, previous, validated))
+            self._review_redo_history = []
+            self.review_undo_button.configure(state='normal'); self.review_redo_button.configure(state='disabled')
+            _refresh_embedded_validation_report(self, schedule=False)
+
+        self.after(0, finish)
+
+    threading.Thread(target=worker, name='review-validation-override', daemon=True).start()
 
 
 def _manual_asr_match(expected_text: str, transcript: str) -> bool:
-    """Dependency-free copy of the production ASR acceptance threshold."""
-    def words(text: str) -> list[str]:
-        folded = unicodedata.normalize('NFKD', str(text).lower())
-        folded = ''.join(char for char in folded if not unicodedata.combining(char))
-        return re.findall(r"[\w']+", folded, flags=re.UNICODE)
-    expected, recognised = words(expected_text), words(transcript)
-    if not expected:
-        return bool(not recognised)
-    previous = list(range(len(recognised) + 1))
-    for index, token in enumerate(expected, 1):
-        current = [index]
-        for actual_index, actual in enumerate(recognised, 1):
-            current.append(min(previous[actual_index] + 1, current[actual_index - 1] + 1, previous[actual_index - 1] + (token != actual)))
-        previous = current
-    distance = previous[-1] / len(expected)
-    shared = sum(min(expected.count(token), recognised.count(token)) for token in set(expected))
-    coverage = shared / len(expected)
-    return bool(recognised) and distance <= 0.35 and coverage >= 0.70
+    """Use the exact same language-neutral rule as production ASR checks."""
+    from full_voxcpm2_batch import evaluate_asr_match
+    return bool(evaluate_asr_match(expected_text, transcript).get('satisfactory'))
 
 
 def _listen_to_original_english_voice(self, source: str, row: dict) -> None:

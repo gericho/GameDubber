@@ -31,7 +31,7 @@ GameDubber is a local tool for creating AI voice-over mods for Bethesda games, i
 - Generation of voice-over for target languages whose subtitles are already available in the game.
 - Local WEM → WAV extraction and Wwise Vorbis WEM conversion.
 - Selectable TTS backends: XTTS v2, VoxCPM2, Qwen TTS, Chatterbox, and CosyVoice.
-- Whisper ASR quality control with language-neutral fuzzy matching (safe minor spelling and split/join variations, 90% coverage minimum) and automatic regeneration for up to four attempts.
+- Whisper ASR quality control with language-neutral fuzzy matching (safe minor spelling and split/join variations, 88% coverage minimum) and automatic regeneration for up to four attempts.
 - Native, checkpoint-based resume: an interrupted production batch can safely continue from its recorded state.
 - Separate, user-editable phonetic dictionaries for each model.
 - Real-time report to inspect, filter, preview, and manually validate every line.

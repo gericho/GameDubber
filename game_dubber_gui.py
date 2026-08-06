@@ -26,8 +26,8 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 SOURCE_ROOT = Path(__file__).resolve().parent
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 WORK_ROOT = APP_ROOT / "work" if getattr(sys, "frozen", False) else SOURCE_ROOT / "work"
-APP_VERSION = "ALPHA 0.1.77"
-BUILD_TIMESTAMP = "2026-08-06 14:58:22"
+APP_VERSION = "ALPHA 0.1.93"
+BUILD_TIMESTAMP = "2026-08-06 20:59:54"
 
 class FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
@@ -71,7 +71,7 @@ class GameDubberApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(f"GameDubber {APP_VERSION} by Gericho — build {BUILD_TIMESTAMP}")
-        self.geometry("1575x990")
+        self.geometry("1418x1188")
         self._refresh_progress_bars()
         window_width = self.winfo_width()
         window_height = self.winfo_height()
@@ -80,7 +80,7 @@ class GameDubberApp(tk.Tk):
         position_x = max(0, (screen_width - window_width) // 2)
         position_y = max(0, (screen_height - window_height) // 2)
         self.geometry(f"{window_width}x{window_height}+{position_x}+{position_y}")
-        self.minsize(1425, 840)
+        self.minsize(1283, 1008)
         self.game_path = tk.StringVar()
         self.target_language = tk.StringVar()
         self.gpu_status = tk.StringVar(value="GPU: Checking CUDA availability...")
@@ -168,7 +168,9 @@ class GameDubberApp(tk.Tk):
         ttk.Label(panel, textvariable=self.step_percent, width=8, anchor="e").grid(row=14, column=2, sticky="e", padx=(8, 0), pady=(2, 7))
         ttk.Label(panel, textvariable=self.current_line, justify="left", anchor="w").grid(row=15,column=0,columnspan=3,sticky="ew")
         ttk.Checkbutton(panel, text="Live preview target-language WAV (slows batch)", variable=self.preview_wav_playback_enabled).grid(row=16,column=0,columnspan=2,sticky="w",pady=(4,0))
-        ttk.Label(panel, textvariable=self.eta_status, anchor="e").grid(row=16,column=2,sticky="e",pady=(4,0))
+        self.eta_controls = ttk.Frame(panel)
+        self.eta_controls.grid(row=16, column=2, sticky="e", pady=(4, 0))
+        ttk.Label(self.eta_controls, textvariable=self.eta_status, anchor="e").pack(side="left")
         terminal_font = "Cascadia Code Light"
         self.log=tk.Text(panel,bg="black",fg="#ffd400",font=(terminal_font,8),wrap="word",state="disabled",height=10)
         self.log.tag_configure("english_dialogue", foreground="#a9a9a9")
@@ -184,7 +186,7 @@ class GameDubberApp(tk.Tk):
         report_toolbar = ttk.Frame(self.validation_report)
         report_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         report_toolbar.columnconfigure(11, weight=1)
-        ttk.Checkbutton(report_toolbar, text="Only not validated", variable=self.review_only_unvalidated).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(report_toolbar, text="Only Inconsistent", variable=self.review_only_unvalidated).grid(row=0, column=0, sticky="w")
         self.review_track_enabled = tk.BooleanVar(value=False)
         ttk.Checkbutton(report_toolbar, text="Track", variable=self.review_track_enabled).grid(row=0, column=1, padx=(12, 8))
         self.review_search_text = tk.StringVar()
@@ -216,6 +218,7 @@ class GameDubberApp(tk.Tk):
         self.review_tree.tag_configure("available", foreground="#808080")
         self.review_tree.tag_configure("deferred", foreground="#c6a100")
         self.review_tree.tag_configure("validated", foreground="#179b3a")
+        self.review_tree.tag_configure("awaiting_asr", foreground="#1687d4")
         self.review_tree.tag_configure("not_validated", foreground="#d32121")
         review_scroll = ttk.Scrollbar(self.validation_report, orient="vertical", command=self.review_tree.yview)
         self.review_tree.configure(yscrollcommand=review_scroll.set)
@@ -241,6 +244,32 @@ class GameDubberApp(tk.Tk):
         # Scrolling after every child event forces a complete Text layout and
         # eventually makes Tk unresponsive.  The disk log remains immediate
         # and complete; only the visual scroll is coalesced.
+        if getattr(self, "_terminal_scroll_after_id", None) is None:
+            def scroll_terminal() -> None:
+                self._terminal_scroll_after_id = None
+                try:
+                    self.log.see("end")
+                except tk.TclError:
+                    pass
+            self._terminal_scroll_after_id = self.after(120, scroll_terminal)
+        self.log.configure(state="disabled")
+        log_path = WORK_ROOT / "logs" / "gamedubber.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"[{datetime.now().astimezone().isoformat(timespec='seconds')}] {line}")
+
+    def _append_log_fragments(self, fragments: list[tuple[str, str | None]]) -> None:
+        """Write one terminal line with independently coloured fragments."""
+        text = ''.join(part for part, _tag in fragments)
+        line = text + ("" if text.endswith("\n") else "\n")
+        self.log.configure(state="normal")
+        for part, fragment_tag in fragments:
+            if part:
+                self.log.insert("end", part, fragment_tag) if fragment_tag else self.log.insert("end", part)
+        self.log.insert("end", "\n") if not text.endswith("\n") else None
+        visible_lines = int(self.log.index("end-1c").split(".", 1)[0])
+        if visible_lines > 800:
+            self.log.delete("1.0", f"{visible_lines - 650}.0")
         if getattr(self, "_terminal_scroll_after_id", None) is None:
             def scroll_terminal() -> None:
                 self._terminal_scroll_after_id = None
@@ -1135,10 +1164,9 @@ class GameDubberApp(tk.Tk):
         try:
             folder = Path(raw_path)
             free = shutil.disk_usage(folder).free / 1024 ** 3
-            valid = (folder / "Data").is_dir()
-            self.disk_status.set(f"Disk space: {free:.1f} GB free | Data folder: {'Found' if valid else 'Not found'}")
+            self.disk_status.set(f"Disk space: {free:.1f} GB free")
         except OSError:
-            self.disk_status.set("Disk space: unavailable | Data folder: Not found")
+            self.disk_status.set("Disk space: unavailable")
 
     def _schedule_disk_status(self) -> None:
         self._refresh_disk_status()
