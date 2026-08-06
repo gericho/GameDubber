@@ -1126,7 +1126,9 @@ def _start_full_voiceover_batch_with_adapter(self, resume_run: Path | None = Non
     if resuming:
         command.append('--resume')
     self._full_batch_running = True
-    self._full_batch_queue = queue.Queue()
+    # Bounded child output provides backpressure instead of allowing an
+    # unlimited backlog of terminal/report events to consume RAM over hours.
+    self._full_batch_queue = queue.Queue(maxsize=1000)
     resumed_count = _resume_completed_count(run_dir) if resuming else 0
     session_started_monotonic = time.monotonic()
     self._full_batch_context = {'language': language, 'engine': engine, 'engine_name': display_engine_name, 'unique_count': unique_count, 'run_dir': run_dir, 'batch_log': batch_log, 'latest_number': resumed_count, 'completed_wems': resumed_count, 'latest_attempt_number': resumed_count, 'started_monotonic': session_started_monotonic, 'eta_anchor_completed': resumed_count, 'eta_anchor_monotonic': session_started_monotonic, 'eta_text': 'calculating...', 'resuming': resuming, 'voxcpm_steps': voxcpm_steps, 'preview_wavs': preview_wavs, 'preview_player_started': False, 'game_path': self.game_path.get().strip(), 'asr_checked': 0, 'asr_total': resumed_count if resuming else 500}
@@ -1184,7 +1186,7 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
     # and the extraction/encoding workers can emit events faster than the UI
     # consumes them; an endless ``while True`` then prevents mouse clicks,
     # window moves and the live-preview checkbox from being serviced.
-    max_events_per_tick = 100
+    max_events_per_tick = 25
     events_processed = 0
     try:
         while events_processed < max_events_per_tick:
@@ -2309,14 +2311,14 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     # progress events per second; rebuilding the page for each one starves
     # Tk's event loop and makes the main window feel frozen.  Keep the visible
     # selection responsive, but limit the expensive synchronization/render to
-    # once every four seconds while Track is enabled.
+    # once every eight seconds while Track is enabled.
     track_enabled = bool(
         getattr(self, 'review_track_enabled', None) is not None
         and self.review_track_enabled.get()
     )
     last_render = float(getattr(self, '_review_last_full_render_monotonic', 0.0) or 0.0)
-    if schedule and track_enabled and (time.monotonic() - last_render) < 4.0:
-        self.after(500, self._refresh_embedded_validation_report)
+    if schedule and track_enabled and (time.monotonic() - last_render) < 8.0:
+        self.after(750, self._refresh_embedded_validation_report)
         return
     cache = _review_sync(self, run_dir)
     prepared = []

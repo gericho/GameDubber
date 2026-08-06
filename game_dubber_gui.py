@@ -231,9 +231,19 @@ class GameDubberApp(tk.Tk):
         # Keep the on-screen terminal responsive while the file log remains
         # complete and chronological for later inspection.
         visible_lines = int(self.log.index("end-1c").split(".", 1)[0])
-        if visible_lines > 1800:
-            self.log.delete("1.0", f"{visible_lines - 1500}.0")
-        self.log.see("end")
+        if visible_lines > 800:
+            self.log.delete("1.0", f"{visible_lines - 650}.0")
+        # Scrolling after every child event forces a complete Text layout and
+        # eventually makes Tk unresponsive.  The disk log remains immediate
+        # and complete; only the visual scroll is coalesced.
+        if getattr(self, "_terminal_scroll_after_id", None) is None:
+            def scroll_terminal() -> None:
+                self._terminal_scroll_after_id = None
+                try:
+                    self.log.see("end")
+                except tk.TclError:
+                    pass
+            self._terminal_scroll_after_id = self.after(120, scroll_terminal)
         self.log.configure(state="disabled")
         log_path = WORK_ROOT / "logs" / "gamedubber.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
