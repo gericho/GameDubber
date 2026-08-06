@@ -2388,7 +2388,7 @@ def _refresh_embedded_validation_report(self, schedule: bool = True) -> None:
     self.review_jump_next_button.configure(state='normal' if page + 5 < pages else 'disabled')
     requires_review = max(0, counts['not_validated'] - counts['rejected'])
     search_suffix = f' | Search: {len(prepared):,} match(es)' if search_text else ''
-    self.review_status.set(f'Validated: {counts["validated"]:,} | Deferred: {counts["deferred"]:,} | Requires review: {requires_review:,} | Rejected: {counts["rejected"]:,} | Page {page + 1}/{pages} ({len(prepared):,} journal entries){search_suffix}')
+    self.review_status.set(f'Validated: {counts["validated"]:,} | Deferred: {counts["deferred"]:,} | Requires review: {requires_review:,} | Rejected: {counts["rejected"]:,} | Page {page + 1}/{pages}{search_suffix}')
     self._review_last_full_render_monotonic = time.monotonic()
     if schedule:
         self.after(1000, self._refresh_embedded_validation_report)
