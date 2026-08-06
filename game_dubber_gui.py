@@ -26,8 +26,8 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 SOURCE_ROOT = Path(__file__).resolve().parent
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 WORK_ROOT = APP_ROOT / "work" if getattr(sys, "frozen", False) else SOURCE_ROOT / "work"
-APP_VERSION = "ALPHA 0.1.70"
-BUILD_TIMESTAMP = "2026-08-06 13:32:13"
+APP_VERSION = "ALPHA 0.1.71"
+BUILD_TIMESTAMP = "2026-08-06 13:36:40"
 
 class FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
@@ -136,13 +136,12 @@ class GameDubberApp(tk.Tk):
         panel.columnconfigure(1, weight=1); panel.rowconfigure(17, weight=0, minsize=180); panel.rowconfigure(18, weight=1, minsize=260)
         top_row = ttk.Frame(panel)
         top_row.grid(row=0, column=0, columnspan=3, sticky="ew")
-        top_row.columnconfigure(0, weight=1)
         folder_row = ttk.Frame(top_row)
         folder_row.grid(row=0, column=0, sticky="w")
         ttk.Label(folder_row, text="Game folder").grid(row=0, column=0, sticky="w")
         ttk.Entry(folder_row, textvariable=self.game_path, width=68).grid(row=0, column=1, sticky="w", padx=8)
         ttk.Button(folder_row, text="Browse...", command=self._choose_folder).grid(row=0, column=2, sticky="w")
-        ttk.Label(top_row, textvariable=self.hardware_status, anchor="e").grid(row=0, column=1, sticky="e", padx=(20, 0))
+        ttk.Label(panel, textvariable=self.hardware_status, anchor="w").grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
         gpu_usage_row = ttk.Frame(panel)
         gpu_usage_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
         gpu_usage_row.columnconfigure(0, weight=1)
