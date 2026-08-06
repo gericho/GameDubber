@@ -1,5 +1,9 @@
 # GameDubber ALPHA
 
+<p align="center">
+  <img src="assets/gamedubber-icon.png" width="180" alt="GameDubber icon">
+</p>
+
 <a href="https://ko-fi.com/gerichoit"><img src="https://ko-fi.com/img/githubbutton_sm.svg" height="36" alt="Support me on Ko-fi"></a>
 <a href="https://github.com/sponsors/gericho"><img src="assets/github-sponsors-button.svg" height="32" alt="GitHub Sponsors"></a>
 
