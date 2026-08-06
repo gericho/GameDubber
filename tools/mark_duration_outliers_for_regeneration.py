@@ -45,7 +45,7 @@ def main() -> int:
     rows = connection.execute(
         """SELECT source_audio_path, reference_duration_ms, output_duration_ms
            FROM production_voice_outputs
-           WHERE run_id=? AND status='wem_generated'
+           WHERE run_id=? AND status IN ('wem_generated', 'duration_outlier_pending_regeneration')
              AND reference_duration_ms >= 1500 AND output_duration_ms > 0
              AND CAST(output_duration_ms AS REAL) / reference_duration_ms > ?
            ORDER BY source_audio_path""",
@@ -66,7 +66,10 @@ def main() -> int:
             limit_ms = round(int(reference_ms) * args.ratio)
             row = dict(prior)
             row.update({
-                "status": "duration_outlier_pending_regeneration",
+                # The old WEM must be recreated, so expose it exactly like a
+                # missing WEM in the GUI.  The durable reason stays internal
+                # for the resume scanner and diagnostics.
+                "status": "wem_unavailable",
                 "duration_recheck_pending": True,
                 "duration_validation": {
                     "reference_duration_ms": int(reference_ms),
@@ -84,7 +87,7 @@ def main() -> int:
 
     connection.executemany(
         """UPDATE production_voice_outputs
-           SET status='duration_outlier_pending_regeneration', error=?
+           SET status='wem_unavailable', error=?
            WHERE run_id=? AND source_audio_path=?""",
         [
             (f"target duration exceeds {args.ratio:.2f}x English reference; regeneration pending", run_id, str(source))

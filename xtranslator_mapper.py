@@ -2282,19 +2282,21 @@ def _review_state(cache: dict, source: str, row: dict) -> tuple[str, str, int]:
     wem = Path(str(row.get('output_wem_path', '')))
     # A user can listen to a retained legacy WEM and explicitly approve or
     # reject it.  That informed manual decision must take precedence over the
-    # automatic short-reference deferral, provided an actual WEM exists.
+    # automatic short-reference deferral, provided an actual WEM exists. The
+    # report deliberately does not distinguish manual and automatic results.
     if source in cache['manual'] and wem.is_file():
-        return ('validated', 'Validated (manual)', 0) if cache['manual'][source] else ('not_validated', 'Not validated (manual)', 0)
+        return ('validated', 'Validated', 0) if cache['manual'][source] else ('not_validated', 'Not validated', 0)
     if row.get('status') == 'deferred_short_reference':
         return 'deferred', 'Deferred', 0
-    if row.get('status') == 'duration_outlier_pending_regeneration':
-        return 'not_validated', 'Duration retry pending', 0
     available = row.get('status') == 'wem_generated' and wem.is_file()
     if not available:
         return 'available', 'WEM unavailable', 0
     asr = cache['asr'].get(source)
     if asr:
-        return ('validated', 'Validated', int(asr['attempts'])) if asr['validated'] else ('not_validated', 'Not validated', int(asr['attempts']))
+        attempts = int(asr['attempts'])
+        if asr['validated']:
+            return 'validated', 'Validated', attempts
+        return 'not_validated', ('Not validated' if attempts >= 4 else 'Not yet validated'), attempts
     return 'not_validated', 'Not yet validated', 0
 
 

@@ -1072,27 +1072,15 @@ def main() -> int:
                 deferred_sources.add(source_path)
         print(f"RESUME completed={len(completed_sources)} deferred_short_reference={len(deferred_sources)} total={total} language={args.language} engine={args.engine}", flush=True)
     completed_max_number = max((int(row.get("number", 0)) for row in completed_result_rows), default=0)
-    resume_partial_rows: list[dict] = []
-    if args.resume and args.asr_checkpoint_interval and completed_max_number % args.asr_checkpoint_interval:
-        active_block_start = ((completed_max_number - 1) // args.asr_checkpoint_interval) * args.asr_checkpoint_interval + 1
-        # results.jsonl is append-only: a WEM may have several historical
-        # entries after a resume.  A checkpoint must contain each source WEM
-        # exactly once, using its latest completed result.
-        latest_partial_rows: dict[str, dict] = {}
-        for row in completed_result_rows:
-            if active_block_start <= int(row.get("number", 0)) <= completed_max_number:
-                latest_partial_rows[str(row.get("source_audio_path", ""))] = row
-        resume_partial_rows = list(latest_partial_rows.values())
     connection = sqlite3.connect(args.database)
     setup_database(connection)
     torch.cuda.empty_cache()
-    # A resume continues synthesis immediately unless it has a retry queue
-    # for a checkpoint that was already closed before shutdown.  In
-    # particular, a partial 500-line group never loads Whisper on launch.
-    defer_generation_model = False
+    # Resume begins from manifest group 1.  The first group may need only
+    # Whisper, so delay XTTS allocation until the first actual synthesis.
+    defer_generation_model = bool(args.resume)
     model = None
     if defer_generation_model:
-        print("MODEL loading Whisper first for resume ASR validation", flush=True)
+        print("MODEL loading deferred: resume begins with manifest-group ASR validation", flush=True)
     else:
         print(f"MODEL loading {args.engine} on CUDA", flush=True)
         try:
@@ -1109,8 +1097,9 @@ def main() -> int:
     asr_unresolved = 0
     completed_asr_checkpoints: set[int] = set()
     asr_checked_sources: set[str] = set()
-    pending_asr_retries: dict[str, dict] = {}
+    asr_exhausted_sources: set[str] = set()
     if args.resume and asr_checks_path.is_file():
+        latest_asr_check_by_source: dict[str, dict] = {}
         for line in asr_checks_path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 check = json.loads(line)
@@ -1118,38 +1107,32 @@ def main() -> int:
                 if checkpoint > 0:
                     completed_asr_checkpoints.add(checkpoint)
                 source_path = str(check.get("source_audio_path", ""))
-                # A failed check remains pending: on the next launch it must
-                # be retried (and can then fall through to VoxCPM2), whereas
-                # an accepted line is safe to skip permanently.
-                if source_path and bool(check.get("satisfactory")):
-                    asr_checked_sources.add(source_path)
+                if source_path:
+                    latest_asr_check_by_source[source_path] = check
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
-    if args.resume and asr_retry_path.is_file():
-        for line in asr_retry_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                retry = json.loads(line)
-                source_path = str(retry.get("source_audio_path", ""))
-                if not source_path:
-                    continue
-                if bool(retry.get("satisfactory")):
-                    pending_asr_retries.pop(source_path, None)
-                else:
-                    pending_asr_retries[source_path] = retry
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
+        for source_path, check in latest_asr_check_by_source.items():
+            if bool(check.get("satisfactory")):
+                asr_checked_sources.add(source_path)
+            elif len(check.get("attempts", [])) >= args.asr_max_attempts:
+                # A final ASR failure is a review item, not a new resume job.
+                asr_exhausted_sources.add(source_path)
+    # The old retry journal is historical diagnostics only. Resume derives
+    # work solely from the latest WEM state and successful ASR checks.
+    resume_unvalidated_rows: list[dict] = []
     if args.resume and args.asr_checkpoint_interval:
-        # A retry journal from a partially generated block is not actionable
-        # yet.  It will be revalidated from attempt 1 when that source-number
-        # block reaches its closing boundary.  Only retry work belonging to a
-        # block whose final source number already exists may hold up resume.
-        pending_asr_retries = {
-            source: entry for source, entry in pending_asr_retries.items()
-            if (
-                source not in deferred_sources
-                and int(entry.get("group", 0)) * args.asr_checkpoint_interval <= completed_max_number
-            )
-        }
+        for previous in completed_result_rows:
+            source_path = str(previous.get("source_audio_path", ""))
+            if not source_path or source_path in asr_checked_sources or source_path in asr_exhausted_sources:
+                continue
+            number = int(previous.get("number", 0))
+            if number <= 0:
+                continue
+            resume_unvalidated_rows.append(previous)
+        print(
+            f"ASR resume manifest scan: unvalidated_wems={len(resume_unvalidated_rows)}",
+            flush=True,
+        )
     preview_sequence = 0
     pause_requested = False
     started = datetime.now(timezone.utc)
@@ -1183,15 +1166,22 @@ def main() -> int:
             row = next(pending, None)
             prepared_future = None
             pending_outputs: list[dict] = []
-            asr_pending_group: list[dict] = []
-            # Retain WEMs already produced in the current incomplete
-            # source-number group.  They join the newly generated remainder
-            # and are ASR-checked together only at that group's next 500-line
-            # boundary.
-            for previous in resume_partial_rows:
+            # Keep pending ASR work separated by *manifest* group.  A resume
+            # can skip the exact boundary row (501, 1001, ...) because that
+            # WEM already exists; using only that row as the trigger would
+            # then silently miss the whole preceding 500-line validation.
+            # Grouping by source number makes the first later pending item
+            # close every earlier group reliably.
+            asr_pending_groups: dict[int, list[dict]] = {}
+            # On resume, preload every WEM which has no successful ASR
+            # result. The normal manifest boundary closes each 500-line group
+            # in order; generated replacements join their own group below.
+            for previous in resume_unvalidated_rows:
                 internal_path = str(previous['source_audio_path'])
                 relative = Path(*internal_path.replace('\\', '/').split('/'))
-                asr_pending_group.append({
+                previous_number = int(previous.get('number', 0))
+                previous_group = max(1, ((previous_number - 1) // args.asr_checkpoint_interval) + 1)
+                asr_pending_groups.setdefault(previous_group, []).append({
                     'row': previous, 'number': int(previous.get('number', 0)),
                     'result': dict(previous), 'output_wem': Path(str(previous['output_wem_path'])),
                     'temp_wem': temp_root / '_asr_resume_partial' / relative,
@@ -1521,111 +1511,14 @@ def main() -> int:
                             print(f"OUTPUT {item['number']}/{total} stage=preview_target_complete", flush=True)
                     item["result"].update({"status": "wem_generated"})
                     generated += 1
-                    asr_pending_group.append(item)
+                    item_group = max(1, ((int(item['number']) - 1) // args.asr_checkpoint_interval) + 1)
+                    asr_pending_groups.setdefault(item_group, []).append(item)
                 except Exception as error:
                     item["result"].update({"status": "failed", "error": str(error), "error_traceback": traceback.format_exc()})
                     failed += 1
                     print(f"ERROR {item['number']}/{total} {type(error).__name__}: {error}", flush=True)
                 persist_result(item)
                 return True
-
-            # A resumed run may pre-date ASR validation.  Audit every already
-            # generated WEM in 500-item groups before creating a single new
-            # one; only failed items are ever rewritten.
-            if args.resume and args.asr_checkpoint_interval and generated >= args.asr_checkpoint_interval:
-                newest_by_source: dict[str, dict] = {}
-                for previous in completed_result_rows:
-                    newest_by_source[str(previous.get('source_audio_path', ''))] = previous
-                # Compatibility recovery for a run that was interrupted
-                # before the retry journal existed.  This is derived only
-                # from normal pipeline state: if the earliest 500-line block
-                # has some accepted ASR rows, the remaining eligible rows in
-                # that same block are its pending red retries.  They must be
-                # regenerated before a later block is inspected.
-                if not pending_asr_retries:
-                    numbered_rows = sorted(
-                        (row for row in newest_by_source.values() if int(row.get('number', 0)) > 0),
-                        key=lambda row: int(row.get('number', 0)),
-                    )
-                    fixed_blocks: dict[int, list[dict]] = {}
-                    for row in numbered_rows:
-                        number = int(row.get('number', 0))
-                        fixed_blocks.setdefault((number - 1) // args.asr_checkpoint_interval, []).append(row)
-                    for fixed_block, block_rows in sorted(fixed_blocks.items()):
-                        eligible_rows = list(block_rows)
-                        if not eligible_rows:
-                            continue
-                        accepted_count = sum(str(row.get('source_audio_path', '')) in asr_checked_sources for row in eligible_rows)
-                        if accepted_count == len(eligible_rows):
-                            continue
-                        if accepted_count:
-                            inferred_group = fixed_block + 1
-                            for row in eligible_rows:
-                                source_path = str(row.get('source_audio_path', ''))
-                                if source_path and source_path not in asr_checked_sources:
-                                    pending_asr_retries[source_path] = {
-                                        'group': inferred_group,
-                                        'source_audio_path': source_path,
-                                        'target_language': args.language,
-                                        'attempts': [{'attempt': 1, 'satisfactory': False, 'recovered_from_pipeline_state': True}],
-                                        'satisfactory': False,
-                                        'pending_retry': True,
-                                    }
-                            if pending_asr_retries:
-                                print(f"ASR GROUP {inferred_group} recovered retry queue items={len(pending_asr_retries)} from pipeline state", flush=True)
-                        # A block with no accepted item simply has not begun
-                        # its ASR pass; it belongs to the normal next group.
-                        break
-                # Finish a previously interrupted retry queue before looking
-                # at any new WEM.  This preserves the strict 500 → retry →
-                # recheck → next-500 order.
-                retry_sources = set(pending_asr_retries)
-                retry_rows = [newest_by_source[source] for source in retry_sources if source in newest_by_source]
-                retry_rows.sort(key=lambda item: int(item.get('number', 0)))
-                if retry_rows:
-                    resume_retry_group: list[dict] = []
-                    for previous in retry_rows:
-                        internal_path = str(previous['source_audio_path'])
-                        relative = Path(*internal_path.replace('\\', '/').split('/'))
-                        resume_retry_group.append({
-                            'row': previous, 'number': int(previous.get('number', 0)),
-                            'result': dict(previous), 'output_wem': Path(str(previous['output_wem_path'])),
-                            'temp_wem': temp_root / '_asr_resume_retry' / relative,
-                            'temp_wav': (temp_root / '_asr_resume_retry' / relative).with_suffix('.wav'),
-                            'target_wav': (target_temp_root / '_asr_resume_retry' / relative).with_suffix('.wav'),
-                        })
-                    retry_histories = {
-                        source: list(entry.get('attempts', []))
-                        for source, entry in pending_asr_retries.items()
-                        if source in newest_by_source
-                    }
-                    # Never let an old max-attempt failure suppress the
-                    # regeneration of fresh one-attempt failures.  Each
-                    # retry depth gets its own pass, so early failures are
-                    # regenerated immediately while maxed-out entries are merely
-                    # finalized for the later fallback/report path.
-                    retry_buckets: dict[int, list[dict]] = {}
-                    for item in resume_retry_group:
-                        source_path = str(item['row']['source_audio_path'])
-                        retry_buckets.setdefault(len(retry_histories.get(source_path, [])), []).append(item)
-                    print(f"ASR GROUP resume retry queue items={len(resume_retry_group)}", flush=True)
-                    for retry_depth, retry_bucket in sorted(retry_buckets.items()):
-                        first_number = min(int(item['number']) for item in retry_bucket)
-                        fixed_group = ((first_number - 1) // args.asr_checkpoint_interval) + 1
-                        print(f"ASR GROUP {fixed_group} resume retry depth={retry_depth}/{args.asr_max_attempts} items={len(retry_bucket)}", flush=True)
-                        bucket_histories = {
-                            str(item['row']['source_audio_path']): retry_histories[str(item['row']['source_audio_path'])]
-                            for item in retry_bucket
-                        }
-                        audit_asr_group(retry_bucket, fixed_group, bucket_histories)
-                # Do not audit an arbitrary partial group on resume.  A
-                # production checkpoint is always based on completed WEM
-                # count: 500, 1,000, 1,500, ... .  The normal output path
-                # invokes ``audit_asr_group`` exactly when it reaches the
-                # next multiple.  Here we recover only a retry journal from
-                # a checkpoint already entered before shutdown; scanning
-                # every unchecked WEM would wrongly start Whisper midway
-                # through the next 500-WEM production group.
 
             # One input worker and one output worker keep the CUDA model fed.
             # The output queue is bounded: it can absorb short Wwise spikes
@@ -1659,26 +1552,25 @@ def main() -> int:
                     output_queued = False
                     try:
                         # Do not let the small async Wwise queue cross a
-                        # 500-line ASR boundary.  The preceding group is
-                        # fully written, verified, and checkpointed before
-                        # XTTS begins the next group.
-                        if (
-                            args.asr_checkpoint_interval
-                            and number > 1
-                            and (number - 1) % args.asr_checkpoint_interval == 0
-                        ):
-                            print(
-                                f"ASR BOUNDARY {number - 1}/{total} consolidating previous "
-                                f"{args.asr_checkpoint_interval}-line group",
-                                flush=True,
-                            )
-                            while pending_outputs:
-                                preview_active = args.preview_wav_playback and not (preview_root / '_preview_disabled').is_file()
-                                finish_output(pending_outputs.pop(0), wait=True, wait_for_preview=preview_active)
-                            if asr_pending_group:
-                                group = list(asr_pending_group)
-                                asr_pending_group.clear()
-                                audit_asr_group(group, (number - 1) // args.asr_checkpoint_interval)
+                        # 500-line ASR boundary.  Close every preceding
+                        # manifest group when the first pending item of a
+                        # later group arrives.  This remains correct when a
+                        # resume skips the literal boundary item itself.
+                        if args.asr_checkpoint_interval:
+                            incoming_group = ((number - 1) // args.asr_checkpoint_interval) + 1
+                            closing_groups = sorted(group_id for group_id in asr_pending_groups if group_id < incoming_group)
+                            if closing_groups:
+                                print(
+                                    f"ASR BOUNDARY {(incoming_group - 1) * args.asr_checkpoint_interval}/{total} "
+                                    f"consolidating completed manifest group(s)",
+                                    flush=True,
+                                )
+                                while pending_outputs:
+                                    preview_active = args.preview_wav_playback and not (preview_root / '_preview_disabled').is_file()
+                                    finish_output(pending_outputs.pop(0), wait=True, wait_for_preview=preview_active)
+                                for group_id in closing_groups:
+                                    group = asr_pending_groups.pop(group_id)
+                                    audit_asr_group(group, group_id)
                         preparation_error = None
                         try:
                             if prepared_future is None:
@@ -1797,9 +1689,13 @@ def main() -> int:
                 while pending_outputs:
                     preview_active = args.preview_wav_playback and not (preview_root / '_preview_disabled').is_file()
                     finish_output(pending_outputs.pop(0), wait=True, wait_for_preview=preview_active)
-                if not pause_requested and args.asr_checkpoint_interval and asr_pending_group:
-                    audit_asr_group(asr_pending_group, max(1, math.ceil(generated / args.asr_checkpoint_interval)))
-                    asr_pending_group.clear()
+                if not pause_requested and args.asr_checkpoint_interval and asr_pending_groups:
+                    # On a normal end only the final partial manifest group
+                    # remains.  Keep the exact source-number group ID rather
+                    # than deriving it from the count of generated WEMs.
+                    for group_id in sorted(asr_pending_groups):
+                        audit_asr_group(asr_pending_groups[group_id], group_id)
+                    asr_pending_groups.clear()
                 # The primary batch ends here.  No Vox fallback, exception
                 # ASR, original-WEM retention, or BA2 packaging runs yet.
                 # Persist the later work explicitly so nothing is lost.
