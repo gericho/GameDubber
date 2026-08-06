@@ -27,7 +27,8 @@ GameDubber is a local tool for creating AI voice-over mods for Bethesda games, i
 - Generation of voice-over for target languages whose subtitles are already available in the game.
 - Local WEM → WAV extraction and Wwise Vorbis WEM conversion.
 - Selectable TTS backends: XTTS v2, VoxCPM2, Qwen TTS, Chatterbox, and CosyVoice.
-- Whisper ASR quality control with automatic regeneration for up to five attempts.
+- Whisper ASR quality control with automatic regeneration for up to four attempts.
+- Native, checkpoint-based resume: an interrupted production batch can safely continue from its recorded state.
 - Separate, user-editable phonetic dictionaries for each model.
 - Real-time report to inspect, filter, preview, and manually validate every line.
 - GPU/VRAM, CPU, RAM, and disk-space telemetry, with optional audio preview.
@@ -51,7 +52,7 @@ The current batch intentionally stops here. Exceptions, such as descriptive subt
 
 ## Tested hardware
 
-GameDubber has been tested on an **NVIDIA GeForce RTX 3070 Ti with 8 GB VRAM**, the baseline CUDA configuration. GPUs with more VRAM and higher AI performance can run larger models and substantially reduce GPU-bound ASR and TTS stages. Overall runtime also depends on CPU, storage, BA2 extraction, and Wwise processing.
+GameDubber has been tested on an **NVIDIA GeForce RTX 3070 Ti with 8 GB VRAM**, the baseline CUDA configuration. On this hardware, the current Starfield XTTS v2 generation and ASR-validation phase is estimated at approximately **5–6 days of continuous processing** for the full voice batch. This estimate excludes later exception handling, a final VoxCPM2 pass, and BA2 packaging. GPUs with more VRAM and higher AI performance can run larger models and substantially reduce GPU-bound ASR and TTS stages. Overall runtime also depends on CPU, storage, BA2 extraction, and Wwise processing.
 
 ## Distribution and privacy
 
