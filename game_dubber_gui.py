@@ -92,7 +92,7 @@ class GameDubberApp(tk.Tk):
         self.step_status = tk.StringVar(value="Current task: No task running")
         self.step_percent = tk.StringVar(value="0.00%")
         self.eta_status = tk.StringVar(value="")
-        self.cpu_status = tk.StringVar(value=f"CPU usage 0% - {self._cpu_model()} | RAM: checking...")
+        self.cpu_status = tk.StringVar(value=f"CPU usage 0% - {self._cpu_model()}")
         self.current_line = tk.StringVar(value="Current dialogue: —")
         self.preview_wav_playback_enabled = tk.BooleanVar(value=False)
         self._cpu_times: tuple[int, int] | None = None
@@ -1011,8 +1011,7 @@ class GameDubberApp(tk.Tk):
         self._cpu_times = current
         total_ram, used_ram = self._system_memory()
         cpu_percent = ratio * 100 if self._cpu_times is not None else 0.0
-        ram_suffix = f" | RAM: {total_ram:.1f} GB" if total_ram > 0 else ""
-        self.cpu_status.set(f"CPU usage {cpu_percent:.0f}% - {self._cpu_model()}{ram_suffix}")
+        self.cpu_status.set(f"CPU usage {cpu_percent:.0f}% - {self._cpu_model()}")
         if total_ram > 0:
             ram_ratio = min(1.0, max(0.0, used_ram / total_ram))
             self.ram_usage_status.set(f"RAM usage: {ram_ratio * 100:.0f}% | {used_ram:.1f} / {total_ram:.1f} GB")
@@ -1028,6 +1027,14 @@ class GameDubberApp(tk.Tk):
         if self._gpu_name is None:
             self.gpu_usage_status.set("GPU usage unavailable")
 
+    def _set_gpu_usage_label(self) -> None:
+        """Keep the utilization label stable while telemetry samples refresh."""
+        if self._gpu_name:
+            total_gb = self._gpu_total_mb / 1024 if self._gpu_total_mb else 0.0
+            self.gpu_usage_status.set(f"GPU usage {self._gpu_usage_percent}% - {self._gpu_name} {total_gb:.1f} GB")
+        else:
+            self.gpu_usage_status.set(f"GPU usage {self._gpu_usage_percent}%")
+
     def _detect_gpu(self) -> None:
         """Refresh VRAM telemetry once per second without loading AI models."""
         try:
@@ -1042,6 +1049,7 @@ class GameDubberApp(tk.Tk):
             ratio = min(1.0, max(0.0, self._gpu_used_mb / self._gpu_total_mb)) if self._gpu_total_mb else 0.0
             self.vram_usage_status.set(f"VRAM usage {ratio * 100:.0f}%")
             self._draw_usage_bar(self.vram_bar, ratio)
+            self._set_gpu_usage_label()
             self._refresh_gpu_status()
         except (FileNotFoundError, subprocess.SubprocessError, IndexError, ValueError):
             self._gpu_name = None
@@ -1062,7 +1070,7 @@ class GameDubberApp(tk.Tk):
             pass
         if latest is not None:
             self._gpu_usage_percent = latest
-            self.gpu_usage_status.set(f"GPU usage {self._gpu_usage_percent}%")
+            self._set_gpu_usage_label()
             self._draw_usage_bar(self.gpu_usage_bar, self._gpu_usage_percent / 100)
         elif self._gpu_usage_process is None:
             self.gpu_usage_bar.delete("all")
