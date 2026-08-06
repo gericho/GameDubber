@@ -181,6 +181,12 @@ _TARGET_LANGUAGE_SETTINGS = {
 # less than 1.5 seconds.  Longer references use the normal automatic ASR
 # retry cycle before anything is deferred.
 XTTS_MIN_REFERENCE_DURATION_MS = 1500
+# Official Spanish voice-over pairs stay very close to their English
+# counterparts. Italian needs some room for natural phrasing, but a clip more
+# than 1.75x the original is a synthesis outlier, not normal localisation.
+TARGET_DURATION_MAX_RATIO = 1.75
+TARGET_DURATION_MAX_ATTEMPTS = 4
+XTTS_MAX_DURATION_SPEED = 2.0
 
 # Faster-Whisper expects an ISO language identifier rather than the game
 # archive locale.  Keep this mapping separate from each TTS backend's own
@@ -607,7 +613,7 @@ def _xtts_load_reference_wav(audio_path: str, sampling_rate: int) -> torch.Tenso
 
 def generate_with_engine(engine: str, model, text: str, reference: Path, temp_root: Path,
                          target_language: str, voxcpm_steps: int = 6,
-                         generation_seed: int | None = None) -> tuple[np.ndarray, int]:
+                         generation_seed: int | None = None, xtts_speed: float = 1.0) -> tuple[np.ndarray, int]:
     if generation_seed is not None:
         # Not every backend exposes a per-call seed.  Seeding immediately
         # before its call keeps retry attempts reproducible regardless.
@@ -653,6 +659,7 @@ def generate_with_engine(engine: str, model, text: str, reference: Path, temp_ro
             text=text, speaker_wav=[str(reference)],
             language=generation_language_setting(engine, target_language),
             file_path=str(generated_path), split_sentences=False,
+            speed=xtts_speed,
             **XTTS_V2_STANDARD_PARAMETERS,
         )
         values, sample_rate = sf.read(generated_path, dtype='float32')
@@ -740,6 +747,77 @@ def reference_wav_duration_ms(path: Path) -> int:
     if info.samplerate <= 0 or info.frames <= 0:
         raise RuntimeError("English reference WAV has no valid duration")
     return round(info.frames * 1000 / info.samplerate)
+
+
+class TargetDurationOutlier(RuntimeError):
+    """Raised when no synthesis attempt fits the target-duration envelope."""
+
+
+def target_duration_limit_ms(reference_duration_ms: int) -> int:
+    return max(1, round(reference_duration_ms * TARGET_DURATION_MAX_RATIO))
+
+
+def target_duration_details(reference_duration_ms: int, output_duration_ms: int,
+                            speed: float, attempt: int) -> dict[str, float | int | bool]:
+    limit_ms = target_duration_limit_ms(reference_duration_ms)
+    ratio = output_duration_ms / max(1, reference_duration_ms)
+    return {
+        'reference_duration_ms': int(reference_duration_ms),
+        'output_duration_ms': int(output_duration_ms),
+        'maximum_duration_ms': int(limit_ms),
+        'duration_ratio': round(ratio, 4),
+        'duration_satisfactory': output_duration_ms <= limit_ms,
+        'duration_attempt': int(attempt),
+        'xtts_speed': round(speed, 3),
+    }
+
+
+def next_xtts_duration_speed(current_speed: float, reference_duration_ms: int,
+                             output_duration_ms: int) -> float:
+    """Raise XTTS speed only as far as the observed overrun requires."""
+    observed_ratio = output_duration_ms / max(1, reference_duration_ms)
+    requested = current_speed * observed_ratio / TARGET_DURATION_MAX_RATIO
+    # Preserve a perceptible correction step and a tiny safety margin, while
+    # never going past the highest value tested locally for intelligibility.
+    return min(XTTS_MAX_DURATION_SPEED, max(current_speed + 0.10, requested * 1.03))
+
+
+def generate_duration_controlled(engine: str, model, text: str, reference: Path,
+                                 temp_root: Path, target_language: str, voxcpm_steps: int,
+                                 generation_seed: int | None, number: int, total: int) -> tuple[np.ndarray, int, dict[str, float | int | bool]]:
+    """Generate a target clip which fits the English timing before Wwise/ASR."""
+    reference_duration_ms = reference_wav_duration_ms(reference)
+    speed = 1.0
+    latest: dict[str, float | int | bool] | None = None
+    for attempt in range(1, TARGET_DURATION_MAX_ATTEMPTS + 1):
+        seed = None if generation_seed is None else generation_seed + attempt - 1
+        audio, rate = generate_with_engine(
+            engine, model, text, reference, temp_root, target_language, voxcpm_steps,
+            seed, xtts_speed=speed,
+        )
+        output_duration_ms = round(len(audio) * 1000 / max(1, int(rate)))
+        latest = target_duration_details(reference_duration_ms, output_duration_ms, speed, attempt)
+        if bool(latest['duration_satisfactory']):
+            if attempt > 1:
+                print(f"DURATION {number}/{total} accepted attempt={attempt}/{TARGET_DURATION_MAX_ATTEMPTS} ratio={latest['duration_ratio']:.2f} speed={speed:.2f}", flush=True)
+            return audio, rate, latest
+        print(
+            f"DURATION {number}/{total} too_long attempt={attempt}/{TARGET_DURATION_MAX_ATTEMPTS} "
+            f"ratio={latest['duration_ratio']:.2f} target_ms={output_duration_ms} "
+            f"limit_ms={latest['maximum_duration_ms']} speed={speed:.2f}",
+            flush=True,
+        )
+        if engine != 'xtts_v2':
+            break
+        next_speed = next_xtts_duration_speed(speed, reference_duration_ms, output_duration_ms)
+        if next_speed <= speed:
+            break
+        speed = next_speed
+    assert latest is not None
+    raise TargetDurationOutlier(
+        f"Target duration {latest['output_duration_ms']} ms exceeds {latest['maximum_duration_ms']} ms "
+        f"({latest['duration_ratio']:.2f}x) after {latest['duration_attempt']}/{TARGET_DURATION_MAX_ATTEMPTS} attempts"
+    )
 
 
 def retain_original_wem(reader: Path, decoder: Path, archive: Path, internal_path: str,
@@ -1200,9 +1278,9 @@ def main() -> int:
                     )
                     ensure_generation_model()
                     retry_seed = stable_seed(str(item['row']['source_audio_path'])) + attempt - 1
-                    audio, generated_rate = generate_with_engine(
+                    audio, generated_rate, duration_validation = generate_duration_controlled(
                         args.engine, model, str(item['row']['synthesis_text']), item['temp_wav'], temp_root,
-                        args.language, args.voxcpm_steps, retry_seed,
+                        args.language, args.voxcpm_steps, retry_seed, item['number'], total,
                     )
                     # The initial Wwise task has completed before this function
                     # runs, so re-encoding the same final path is safe.
@@ -1211,6 +1289,7 @@ def main() -> int:
                         args.wwise_console, args.wwise_project, args.decoder, item['number'], total,
                     )
                     item['result'].update(retry_metrics)
+                    item['result']['duration_validation'] = duration_validation
                     item['result']['generation_seed'] = retry_seed
                     validation = run_asr_attempt(item, attempt)
                     attempts.append(validation)
@@ -1282,11 +1361,12 @@ def main() -> int:
                         extract_and_decode_english_wav(args.reader, args.decoder, Path(row_data['original_archive_path']), internal_path, item['temp_wem'], item['temp_wav'], item['number'], total, False)
                         print(f"ITEM {item['number']}/{total} stage=generate_target english_subtitle={json.dumps(str(row_data.get('english_subtitle', '')), ensure_ascii=False)} target_subtitle={json.dumps(str(row_data.get('official_subtitle', '')), ensure_ascii=False)}", flush=True)
                         seed = stable_seed(internal_path) + max(1, first_attempt - 1)
-                        audio, rate = generate_with_engine(args.engine, model, str(row_data['synthesis_text']), item['temp_wav'], temp_root, args.language, args.voxcpm_steps, seed)
+                        audio, rate, duration_validation = generate_duration_controlled(args.engine, model, str(row_data['synthesis_text']), item['temp_wav'], temp_root, args.language, args.voxcpm_steps, seed, item['number'], total)
                         preview_active = args.preview_wav_playback and not (preview_root / '_preview_disabled').is_file()
                         if preview_active:
                             preview_sequence += 1
                         item['result'].update(normalize_and_encode_generated_wem(audio, rate, item['temp_wav'], item['target_wav'], item['output_wem'], args.wwise_console, args.wwise_project, args.decoder, item['number'], total, preview_root if preview_active else None, preview_sequence if preview_active else None))
+                        item['result']['duration_validation'] = duration_validation
                         preview_path = item['result'].get('target_preview_wav_path')
                         if preview_active and preview_path:
                             print(f"OUTPUT {item['number']}/{total} stage=preview_target_wait", flush=True)
@@ -1377,11 +1457,12 @@ def main() -> int:
                         extract_and_decode_english_wav(args.reader, args.decoder, Path(row_data['original_archive_path']), internal_path, item['temp_wem'], item['temp_wav'], item['number'], total, False)
                         print(f"ITEM {item['number']}/{total} stage=generate_target english_subtitle={json.dumps(str(row_data.get('english_subtitle', '')), ensure_ascii=False)} target_subtitle={json.dumps(str(row_data.get('official_subtitle', '')), ensure_ascii=False)}", flush=True)
                         seed = stable_seed(internal_path) + attempt
-                        audio, rate = generate_with_engine(args.engine, model, str(row_data['synthesis_text']), item['temp_wav'], temp_root, args.language, args.voxcpm_steps, seed)
+                        audio, rate, duration_validation = generate_duration_controlled(args.engine, model, str(row_data['synthesis_text']), item['temp_wav'], temp_root, args.language, args.voxcpm_steps, seed, item['number'], total)
                         preview_active = args.preview_wav_playback and not (preview_root / '_preview_disabled').is_file()
                         if preview_active:
                             preview_sequence += 1
                         item['result'].update(normalize_and_encode_generated_wem(audio, rate, item['temp_wav'], item['target_wav'], item['output_wem'], args.wwise_console, args.wwise_project, args.decoder, item['number'], total, preview_root if preview_active else None, preview_sequence if preview_active else None))
+                        item['result']['duration_validation'] = duration_validation
                         preview_path = item['result'].get('target_preview_wav_path')
                         if preview_active and preview_path:
                             print(f"OUTPUT {item['number']}/{total} stage=preview_target_wait", flush=True)
@@ -1677,10 +1758,11 @@ def main() -> int:
                         # must therefore reacquire it before the first item
                         # after that group (not only for retry items).
                         ensure_generation_model()
-                        audio, generated_rate = generate_with_engine(
+                        audio, generated_rate, duration_validation = generate_duration_controlled(
                             args.engine, model, str(row["synthesis_text"]), temp_wav, temp_root,
-                            args.language, args.voxcpm_steps, result.get("generation_seed"),
+                            args.language, args.voxcpm_steps, result.get("generation_seed"), number, total,
                         )
+                        result['duration_validation'] = duration_validation
                         if preview_active:
                             preview_sequence += 1
                             target_preview_sequence = preview_sequence

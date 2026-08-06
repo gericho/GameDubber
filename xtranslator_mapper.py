@@ -2287,6 +2287,8 @@ def _review_state(cache: dict, source: str, row: dict) -> tuple[str, str, int]:
         return ('validated', 'Validated (manual)', 0) if cache['manual'][source] else ('not_validated', 'Not validated (manual)', 0)
     if row.get('status') == 'deferred_short_reference':
         return 'deferred', 'Deferred', 0
+    if row.get('status') == 'duration_outlier_pending_regeneration':
+        return 'not_validated', 'Duration retry pending', 0
     available = row.get('status') == 'wem_generated' and wem.is_file()
     if not available:
         return 'available', 'WEM unavailable', 0
