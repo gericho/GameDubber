@@ -26,8 +26,8 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 SOURCE_ROOT = Path(__file__).resolve().parent
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 WORK_ROOT = APP_ROOT / "work" if getattr(sys, "frozen", False) else SOURCE_ROOT / "work"
-APP_VERSION = "ALPHA 0.1.69"
-BUILD_TIMESTAMP = "2026-08-06 08:57:22"
+APP_VERSION = "ALPHA 0.1.70"
+BUILD_TIMESTAMP = "2026-08-06 13:32:13"
 
 class FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
@@ -92,7 +92,9 @@ class GameDubberApp(tk.Tk):
         self.step_status = tk.StringVar(value="Current task: No task running")
         self.step_percent = tk.StringVar(value="0.00%")
         self.eta_status = tk.StringVar(value="")
-        self.cpu_status = tk.StringVar(value=f"CPU usage 0% - {self._cpu_model()}")
+        self._cpu_name = self._cpu_model()
+        self.hardware_status = tk.StringVar(value=f"CPU: {self._cpu_name} | GPU: detecting...")
+        self.cpu_status = tk.StringVar(value="CPU usage 0%")
         self.current_line = tk.StringVar(value="Current dialogue: —")
         self.preview_wav_playback_enabled = tk.BooleanVar(value=False)
         self._cpu_times: tuple[int, int] | None = None
@@ -132,11 +134,15 @@ class GameDubberApp(tk.Tk):
         # The terminal has a deliberate fixed footprint of roughly ten text
         # rows.  The validation table receives all remaining vertical space.
         panel.columnconfigure(1, weight=1); panel.rowconfigure(17, weight=0, minsize=180); panel.rowconfigure(18, weight=1, minsize=260)
-        folder_row = ttk.Frame(panel)
-        folder_row.grid(row=0, column=0, columnspan=3, sticky="w")
+        top_row = ttk.Frame(panel)
+        top_row.grid(row=0, column=0, columnspan=3, sticky="ew")
+        top_row.columnconfigure(0, weight=1)
+        folder_row = ttk.Frame(top_row)
+        folder_row.grid(row=0, column=0, sticky="w")
         ttk.Label(folder_row, text="Game folder").grid(row=0, column=0, sticky="w")
         ttk.Entry(folder_row, textvariable=self.game_path, width=68).grid(row=0, column=1, sticky="w", padx=8)
         ttk.Button(folder_row, text="Browse...", command=self._choose_folder).grid(row=0, column=2, sticky="w")
+        ttk.Label(top_row, textvariable=self.hardware_status, anchor="e").grid(row=0, column=1, sticky="e", padx=(20, 0))
         gpu_usage_row = ttk.Frame(panel)
         gpu_usage_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
         gpu_usage_row.columnconfigure(0, weight=1)
@@ -1011,7 +1017,7 @@ class GameDubberApp(tk.Tk):
         self._cpu_times = current
         total_ram, used_ram = self._system_memory()
         cpu_percent = ratio * 100 if self._cpu_times is not None else 0.0
-        self.cpu_status.set(f"CPU usage {cpu_percent:.0f}% - {self._cpu_model()}")
+        self.cpu_status.set(f"CPU usage {cpu_percent:.0f}%")
         if total_ram > 0:
             ram_ratio = min(1.0, max(0.0, used_ram / total_ram))
             self.ram_usage_status.set(f"RAM usage: {ram_ratio * 100:.0f}% | {used_ram:.1f} / {total_ram:.1f} GB")
@@ -1027,13 +1033,14 @@ class GameDubberApp(tk.Tk):
         if self._gpu_name is None:
             self.gpu_usage_status.set("GPU usage unavailable")
 
-    def _set_gpu_usage_label(self) -> None:
-        """Keep the utilization label stable while telemetry samples refresh."""
+    def _refresh_hardware_status(self) -> None:
+        """Hardware identity is fixed at the top; live bars show percentages only."""
         if self._gpu_name:
             total_gb = self._gpu_total_mb / 1024 if self._gpu_total_mb else 0.0
-            self.gpu_usage_status.set(f"GPU usage {self._gpu_usage_percent}% - {self._gpu_name} {total_gb:.1f} GB")
+            gpu_description = f"{self._gpu_name} {total_gb:.1f} GB"
         else:
-            self.gpu_usage_status.set(f"GPU usage {self._gpu_usage_percent}%")
+            gpu_description = "detecting..."
+        self.hardware_status.set(f"CPU: {self._cpu_name} | GPU: {gpu_description}")
 
     def _detect_gpu(self) -> None:
         """Refresh VRAM telemetry once per second without loading AI models."""
@@ -1049,12 +1056,13 @@ class GameDubberApp(tk.Tk):
             ratio = min(1.0, max(0.0, self._gpu_used_mb / self._gpu_total_mb)) if self._gpu_total_mb else 0.0
             self.vram_usage_status.set(f"VRAM usage {ratio * 100:.0f}%")
             self._draw_usage_bar(self.vram_bar, ratio)
-            self._set_gpu_usage_label()
+            self._refresh_hardware_status()
             self._refresh_gpu_status()
         except (FileNotFoundError, subprocess.SubprocessError, IndexError, ValueError):
             self._gpu_name = None
             self.vram_usage_status.set("VRAM usage: unavailable")
             self.vram_bar.delete("all")
+            self._refresh_hardware_status()
             self._refresh_gpu_status()
         self.after(1000, self._detect_gpu)
 
@@ -1070,7 +1078,7 @@ class GameDubberApp(tk.Tk):
             pass
         if latest is not None:
             self._gpu_usage_percent = latest
-            self._set_gpu_usage_label()
+            self.gpu_usage_status.set(f"GPU usage {self._gpu_usage_percent}%")
             self._draw_usage_bar(self.gpu_usage_bar, self._gpu_usage_percent / 100)
         elif self._gpu_usage_process is None:
             self.gpu_usage_bar.delete("all")
