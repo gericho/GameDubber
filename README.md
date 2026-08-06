@@ -1,7 +1,7 @@
 # GameDubber ALPHA
 
 <a href="https://ko-fi.com/gerichoit"><img src="https://ko-fi.com/img/githubbutton_sm.svg" height="36" alt="Support me on Ko-fi"></a>
-<a href="https://github.com/sponsors/gericho"><img src="https://img.shields.io/badge/GitHub%20Sponsors-30363D?style=for-the-badge&logo=githubsponsors&logoColor=EA4AAA" height="36" alt="GitHub Sponsors"></a>
+<a href="https://github.com/sponsors/gericho"><img src="assets/github-sponsors-button.svg" height="36" alt="GitHub Sponsors"></a>
 
 Donations to support the project are greatly appreciated!
 
@@ -65,4 +65,4 @@ The planned portable release will download only the backends required by the sel
 Use only an authorised copy of the game and comply with the licences of all models, tools, and content involved. This project does not authorise redistribution of Bethesda assets or use of identifiable voices without permission.
 
 <a href="https://ko-fi.com/gerichoit"><img src="https://ko-fi.com/img/githubbutton_sm.svg" height="36" alt="Support me on Ko-fi"></a>
-<a href="https://github.com/sponsors/gericho"><img src="https://img.shields.io/badge/GitHub%20Sponsors-30363D?style=for-the-badge&logo=githubsponsors&logoColor=EA4AAA" height="36" alt="GitHub Sponsors"></a>
+<a href="https://github.com/sponsors/gericho"><img src="assets/github-sponsors-button.svg" height="36" alt="GitHub Sponsors"></a>
