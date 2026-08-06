@@ -43,7 +43,7 @@ Discovery → text/voice indexing → mapping → subtitle-driven TTS
 
 The current batch intentionally stops here. Exceptions, such as descriptive subtitles enclosed in asterisks, are recorded for a dedicated later stage: their English WEM will first be transcribed with ASR; if credible speech is found, it will be translated and generated, otherwise the original English voice will be retained.
 
-## Planned stages
+## Roadmap
 
 - Dedicated handling for exceptions and lines that do not pass validation.
 - Translation of the original subtitles and generation of both text and voice-over in any target language supported by the selected language model.
