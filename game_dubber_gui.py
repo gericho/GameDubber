@@ -26,8 +26,8 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 SOURCE_ROOT = Path(__file__).resolve().parent
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 WORK_ROOT = APP_ROOT / "work" if getattr(sys, "frozen", False) else SOURCE_ROOT / "work"
-APP_VERSION = "ALPHA 0.1.93"
-BUILD_TIMESTAMP = "2026-08-06 20:59:54"
+APP_VERSION = "ALPHA 0.1.103"
+BUILD_TIMESTAMP = "2026-08-07 19:39:47"
 
 class FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
@@ -70,6 +70,7 @@ def enable_high_dpi() -> None:
 class GameDubberApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self._apply_dark_theme()
         self.title(f"GameDubber {APP_VERSION} by Gericho — build {BUILD_TIMESTAMP}")
         self.geometry("1418x1188")
         self._refresh_progress_bars()
@@ -112,6 +113,48 @@ class GameDubberApp(tk.Tk):
         self.after(3000, self._schedule_cpu_bar)
         self.after(5000, self._schedule_disk_status)
 
+    def _apply_dark_theme(self) -> None:
+        """Apply the project-local dark palette without external themes."""
+        background = "#1b1d21"
+        surface = "#25282e"
+        field = "#2d3138"
+        border = "#454b55"
+        text = "#e7eaf0"
+        muted = "#b8bec8"
+        accent = "#3d7ec0"
+        selected = "#315f91"
+        self.configure(bg=background)
+        self.option_add("*Menu.background", surface)
+        self.option_add("*Menu.foreground", text)
+        self.option_add("*Menu.activeBackground", accent)
+        self.option_add("*Menu.activeForeground", "#ffffff")
+        self.option_add("*Menu.disabledForeground", "#7c838e")
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(".", background=background, foreground=text, fieldbackground=field)
+        style.configure("TFrame", background=background)
+        style.configure("TLabel", background=background, foreground=text)
+        style.configure("TCheckbutton", background=background, foreground=text)
+        style.map("TCheckbutton", background=[("active", background)], foreground=[("disabled", "#7c838e")])
+        style.configure("TButton", background=surface, foreground=text, bordercolor=border, lightcolor=surface, darkcolor=surface)
+        style.map("TButton", background=[("active", accent), ("pressed", selected), ("disabled", "#25282e")], foreground=[("disabled", "#777d87")])
+        style.configure("TEntry", fieldbackground=field, foreground=text, bordercolor=border, insertcolor=text, lightcolor=border, darkcolor=border)
+        style.map("TEntry", bordercolor=[("focus", accent), ("!focus", border)], lightcolor=[("focus", accent), ("!focus", border)], darkcolor=[("focus", accent), ("!focus", border)])
+        style.configure("TCombobox", fieldbackground=field, background=surface, foreground=text, arrowcolor=text, bordercolor=border)
+        style.map("TCombobox", fieldbackground=[("readonly", field)], foreground=[("readonly", text)], selectbackground=[("readonly", selected)], selectforeground=[("readonly", "#ffffff")], bordercolor=[("focus", accent), ("!focus", border)])
+        style.configure("TProgressbar", background="#18b845", troughcolor="#30343b", bordercolor="#454b55", lightcolor="#18b845", darkcolor="#18b845")
+        style.configure("TLabelframe", background=background, foreground=text, bordercolor=border, lightcolor=border, darkcolor=border, borderwidth=1)
+        style.map("TLabelframe", bordercolor=[("!disabled", border)], lightcolor=[("!disabled", border)], darkcolor=[("!disabled", border)])
+        style.configure("TLabelframe.Label", background=background, foreground=text)
+        style.configure("Treeview", background=surface, fieldbackground=surface, foreground=text, bordercolor=border, rowheight=22, borderwidth=0, relief="flat", lightcolor=border, darkcolor=border)
+        style.map("Treeview", background=[("selected", selected)], foreground=[("selected", "#ffffff")])
+        style.configure("Treeview.Heading", background="#30343b", foreground=text, bordercolor=border, relief="flat", borderwidth=0, lightcolor=border, darkcolor=border)
+        style.map("Treeview.Heading", background=[("active", "#3a404a")])
+        style.configure("Vertical.TScrollbar", background="#3a404a", troughcolor=background, bordercolor=background, arrowcolor=text)
+
     def _refresh_progress_bars(self) -> None:
         """Flush pending layout and paint work for both determinate pipeline bars."""
         if hasattr(self, "step") and hasattr(self, "step_percent"):
@@ -146,16 +189,16 @@ class GameDubberApp(tk.Tk):
         gpu_usage_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 4))
         gpu_usage_row.columnconfigure(0, weight=1)
         ttk.Label(gpu_usage_row, textvariable=self.gpu_usage_status).grid(row=0, column=0, sticky="w")
-        self.gpu_usage_bar = tk.Canvas(gpu_usage_row, height=4, highlightthickness=0, bg="#d9d9d9")
+        self.gpu_usage_bar = tk.Canvas(gpu_usage_row, height=4, highlightthickness=0, bg="#30343b")
         self.gpu_usage_bar.grid(row=1, column=0, sticky="ew")
         ttk.Label(panel, textvariable=self.vram_usage_status).grid(row=3, column=0, columnspan=3, sticky="w")
-        self.vram_bar = tk.Canvas(panel, height=4, highlightthickness=0, bg="#d9d9d9")
+        self.vram_bar = tk.Canvas(panel, height=4, highlightthickness=0, bg="#30343b")
         self.vram_bar.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(0, 4))
         ttk.Label(panel, textvariable=self.cpu_status).grid(row=5, column=0, columnspan=3, sticky="w")
-        self.cpu_bar = tk.Canvas(panel, height=4, highlightthickness=0, bg="#d9d9d9")
+        self.cpu_bar = tk.Canvas(panel, height=4, highlightthickness=0, bg="#30343b")
         self.cpu_bar.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(0, 4))
         ttk.Label(panel, textvariable=self.ram_usage_status).grid(row=7, column=0, columnspan=3, sticky="w")
-        self.ram_bar = tk.Canvas(panel, height=4, highlightthickness=0, bg="#d9d9d9")
+        self.ram_bar = tk.Canvas(panel, height=4, highlightthickness=0, bg="#30343b")
         self.ram_bar.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(0, 4))
         ttk.Label(panel,textvariable=self.disk_status).grid(row=9,column=0,columnspan=2,sticky="w")
         ttk.Separator(panel).grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
@@ -1145,7 +1188,21 @@ class GameDubberApp(tk.Tk):
                 pass
 
     def destroy(self) -> None:
-        """Stop the hidden NVIDIA monitor when the GUI is closed."""
+        """Stop background monitors and release the cached manual TTS backend."""
+        manual_server = getattr(self, '_manual_regeneration_server', None)
+        self._manual_regeneration_server = None
+        self._manual_regeneration_engine = None
+        if manual_server is not None and manual_server.poll() is None:
+            try:
+                if manual_server.stdin is not None:
+                    manual_server.stdin.write('{"command":"shutdown"}\n')
+                    manual_server.stdin.flush()
+            except (OSError, ValueError):
+                pass
+            try:
+                manual_server.terminate()
+            except OSError:
+                pass
         process = self._gpu_usage_process
         self._gpu_usage_process = None
         if process is not None and process.poll() is None:

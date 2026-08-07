@@ -1336,10 +1336,19 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                         context['completed_wems'] = completed
                         context['latest_number'] = completed
                         self._track_review_number(number)
-                        # Keep the visible task bar aligned with ``Source
-                        # WEM n / total``.  ``generated`` remains the right
-                        # value for ETA calculations, but not for this bar.
-                        self.step.configure(maximum=max(1, total), value=min(number, total))
+                        # A retry group owns the Current task bar until all
+                        # of its failed WEMs have been regenerated.  The
+                        # ordinary PROGRESS event follows every ITEM and used
+                        # to immediately overwrite that smaller bar with the
+                        # source-manifest position, visibly flashing between
+                        # two unrelated values.
+                        regenerating_asr = bool(context.get('asr_regeneration_active'))
+                        if not regenerating_asr:
+                            # Keep the visible task bar aligned with ``Source
+                            # WEM n / total``.  ``generated`` remains the
+                            # right value for ETA calculations, but not for
+                            # this bar.
+                            self.step.configure(maximum=max(1, total), value=min(number, total))
                         anchor_completed = int(context.get('eta_anchor_completed', 0))
                         completed_in_session = completed - anchor_completed
                         elapsed = max(0.001, time.monotonic() - context.get('eta_anchor_monotonic', context['started_monotonic']))
@@ -1352,11 +1361,12 @@ def _poll_full_voiceover_batch_with_adapter(self) -> None:
                             context['eta_text'] = eta
                         else:
                             eta = context.get('eta_text', 'calculating...')
-                        source_item = context.get('latest_attempt_number', number)
-                        stage_label = context.get('latest_stage_label', 'Generating target-language WEM')
-                        self.step_status.set(
-                            f'Current task: {stage_label} — Source WEM {source_item:,} / {total:,}'
-                        )
+                        if not regenerating_asr:
+                            source_item = context.get('latest_attempt_number', number)
+                            stage_label = context.get('latest_stage_label', 'Generating target-language WEM')
+                            self.step_status.set(
+                                f'Current task: {stage_label} — Source WEM {source_item:,} / {total:,}'
+                            )
                         self.eta_status.set(f'ETA {eta}')
                         dialogue = next((field.split('=', 1)[1] for field in fields if field.startswith('dialogue=')), '')
                         target_text = ''
@@ -2597,11 +2607,16 @@ def _review_context_menu(self, event) -> None:
     # touch production WEMs. They remain available while the batch runs, but
     # only after ASR has reached a final visible decision.
     manual_override_allowed = label in {'Validated', 'Inconsistent'}
-    menu = tk.Menu(self, tearoff=False)
+    menu_style = {
+        'bg': '#25282e', 'fg': '#e7eaf0', 'activebackground': '#3d7ec0',
+        'activeforeground': '#ffffff', 'disabledforeground': '#7c838e',
+        'bd': 0,
+    }
+    menu = tk.Menu(self, tearoff=False, **menu_style)
     menu.add_command(label='●  Validate', foreground='#179b3a', state='normal' if manual_override_allowed else 'disabled', command=lambda: _set_review_validation(self, source, True, label))
     menu.add_command(label='●  Inconsistent', foreground='#d32121', state='normal' if manual_override_allowed else 'disabled', command=lambda: _set_review_validation(self, source, False, label))
     menu.add_separator()
-    models = tk.Menu(menu, tearoff=False)
+    models = tk.Menu(menu, tearoff=False, **menu_style)
     for name, engine, _description in _available_generation_models():
         if engine != 'whisper_asr':
             models.add_command(label=name, state='disabled' if busy or state == 'available' else 'normal', command=lambda value=engine: _regenerate_review_row(self, source, row, value))
@@ -2616,7 +2631,9 @@ def _review_context_menu(self, event) -> None:
     menu.add_command(label='Test with ASR', state='disabled' if busy or state == 'available' else 'normal', command=lambda: _test_review_asr(self, source, row))
     menu.add_command(
         label='Listen to original English voice',
-        state='disabled' if busy or state == 'available' else 'normal',
+        # This is a read-only archive extraction into an isolated preview
+        # folder, so it is safe to offer while production is running.
+        state='disabled' if getattr(self, '_review_manual_running', False) or state == 'available' else 'normal',
         command=lambda: _listen_to_original_english_voice(self, source, row),
     )
     menu.add_command(
@@ -2625,7 +2642,7 @@ def _review_context_menu(self, event) -> None:
         command=lambda: _import_review_original_wem(self, source, row),
     )
     menu.add_separator()
-    translated_models = tk.Menu(menu, tearoff=False)
+    translated_models = tk.Menu(menu, tearoff=False, **menu_style)
     for name, engine, _description in _available_generation_models():
         if engine != 'whisper_asr':
             translated_models.add_command(
@@ -2690,7 +2707,7 @@ def _manual_asr_match(expected_text: str, transcript: str) -> bool:
 
 def _listen_to_original_english_voice(self, source: str, row: dict) -> None:
     """Extract a disposable original WEM copy and play it without changing output."""
-    if getattr(self, '_full_batch_running', False) or getattr(self, '_review_manual_running', False):
+    if getattr(self, '_review_manual_running', False):
         return
     from game_dubber_gui import WORK_ROOT, HIDDEN_PROCESS
     reader, decoder = self._reader_path(), self._decoder_path()
@@ -2918,6 +2935,49 @@ def _transcribe_translate_and_regenerate_review_row(self, source: str, row: dict
     threading.Thread(target=worker, name='review-transcribe-translate-generate', daemon=True).start()
 
 
+def _stop_manual_regeneration_server(self) -> None:
+    """Release the cached manual-generation model when its backend changes."""
+    process = getattr(self, '_manual_regeneration_server', None)
+    self._manual_regeneration_server = None
+    self._manual_regeneration_engine = None
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if process.stdin is not None:
+            process.stdin.write(json.dumps({'command': 'shutdown'}) + '\n')
+            process.stdin.flush()
+        process.wait(timeout=1.5)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.terminate()
+        except OSError:
+            pass
+
+
+def _ensure_manual_regeneration_server(self, engine: str, runtime: Path, script: Path,
+                                       model_path: Path, reader: Path, decoder: Path,
+                                       wwise_console: Path, project: Path, dictionary_root: Path):
+    process = getattr(self, '_manual_regeneration_server', None)
+    if (process is not None and process.poll() is None
+            and getattr(self, '_manual_regeneration_engine', None) == engine):
+        return process
+    _stop_manual_regeneration_server(self)
+    command = [
+        str(runtime), '-u', str(script), '--server', '--engine', engine,
+        '--model', str(model_path), '--reader', str(reader), '--decoder', str(decoder),
+        '--wwise-console', str(wwise_console), '--wwise-project', str(project),
+        '--phonetic-dictionary-root', str(dictionary_root),
+    ]
+    process = subprocess.Popen(
+        command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding='utf-8', errors='replace', bufsize=1,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+    )
+    self._manual_regeneration_server = process
+    self._manual_regeneration_engine = engine
+    return process
+
+
 def _regenerate_review_row(self, source: str, row: dict, engine: str) -> None:
     """Regenerate exactly one local output WEM and immediately preview it."""
     if getattr(self, '_full_batch_running', False) or getattr(self, '_review_manual_running', False):
@@ -2949,26 +3009,39 @@ def _regenerate_review_row(self, source: str, row: dict, engine: str) -> None:
     def worker() -> None:
         temp_root = WORK_ROOT / 'review_manual' / f'{zlib.crc32(source.encode("utf-8")) & 0xffffffff:08x}'
         try:
-            command = [
-                str(runtime), str(script), '--engine', engine, '--model', str(model_path), '--reader', str(reader), '--decoder', str(decoder),
-                '--archive', str(archive), '--source', source, '--target-text', str(row.get('synthesis_text') or row.get('official_subtitle') or ''),
-                '--language', str(row.get('target_language', '')), '--output-wem', str(output_wem), '--wwise-console', str(wwise_console),
-                '--wwise-project', str(project), '--work-dir', str(temp_root), '--phonetic-dictionary-root', str(WORK_ROOT / 'phonetic_dictionaries'),
-                '--voxcpm-steps', str(voxcpm_steps), '--number', str(int(row.get('number', 0))),
-            ]
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', creationflags=HIDDEN_PROCESS)
+            process = _ensure_manual_regeneration_server(
+                self, engine, runtime, script, model_path, reader, decoder,
+                wwise_console, project, WORK_ROOT / 'phonetic_dictionaries',
+            )
+            if process.stdin is None:
+                raise RuntimeError('manual generation server has no input channel')
+            job = {
+                'archive': str(archive), 'source': source,
+                'target_text': str(row.get('synthesis_text') or row.get('official_subtitle') or ''),
+                'language': str(row.get('target_language', '')), 'output_wem': str(output_wem),
+                'work_dir': str(temp_root), 'voxcpm_steps': voxcpm_steps,
+                'number': int(row.get('number', 0)),
+            }
+            process.stdin.write(json.dumps(job, ensure_ascii=False) + '\n')
+            process.stdin.flush()
             assert process.stdout is not None
+            completed = None
             for line in process.stdout:
                 clean = line.rstrip()
+                if clean.startswith('MANUAL_REGEN_RESULT '):
+                    completed = json.loads(clean.split(' ', 1)[1])
+                    break
                 if clean:
                     self.after(0, lambda value=clean: self._append_log('> ' + value))
-            exit_code = process.wait()
-            if exit_code:
-                raise RuntimeError(f'generator process exited with code {exit_code}')
+            if not completed:
+                raise RuntimeError(f'manual generation server stopped unexpectedly (exit code {process.poll()})')
+            if not completed.get('ok'):
+                raise RuntimeError(str(completed.get('error') or 'manual generation failed'))
             self.after(0, lambda: _play_review_wem(self, output_wem, source))
-            self.after(0, lambda: self._append_log('> Manual regeneration complete; playing the new target-language WEM.'))
+            self.after(0, lambda: self._append_log('> Manual regeneration complete; model remains loaded for the selected backend.'))
         except Exception as error:
-            self.after(0, lambda: self._append_log(f'> Manual regeneration ERROR | {error}', 'asr_fail'))
+            message = f'> Manual regeneration ERROR | {error}'
+            self.after(0, lambda value=message: self._append_log(value, 'asr_fail'))
         finally:
             try: shutil.rmtree(temp_root, ignore_errors=True)
             except OSError: pass

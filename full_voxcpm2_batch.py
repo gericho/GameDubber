@@ -38,10 +38,10 @@ from phonetic_dictionaries import load_dictionary
 # Single validated XTTS v2 production profile.  The GUI and offline tools
 # import this value so a test can never silently use another set of settings.
 XTTS_V2_STANDARD_PARAMETERS = {
-    "temperature": 0.70,
-    "top_p": 0.88,
-    "top_k": 55,
-    "repetition_penalty": 9.0,
+    "temperature": 0.75,
+    "top_p": 0.85,
+    "top_k": 50,
+    "repetition_penalty": 10.0,
     "do_sample": True,
     "num_beams": 1,
 }

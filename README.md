@@ -35,6 +35,8 @@ GameDubber is a local tool for creating AI voice-over mods for Bethesda games, i
 - Native, checkpoint-based resume: an interrupted production batch can safely continue from its recorded state.
 - Separate, user-editable phonetic dictionaries for each model.
 - Real-time report to inspect, filter, preview, and manually validate every line.
+- Native dark interface for the pipeline, telemetry, validation report, and review menus.
+- Manual per-line regeneration with the selected backend retained in VRAM until the backend changes or the application closes.
 - GPU/VRAM, CPU, RAM, and disk-space telemetry, with optional audio preview.
 - Translation from an English transcription for dialogue with no official voice-over in the target language.
 
